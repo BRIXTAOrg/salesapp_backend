@@ -5,10 +5,14 @@ import type {
 } from "express";
 
 import bcrypt from "bcryptjs";
-import { eq, or } from "drizzle-orm";
+import {
+  eq,
+  or,
+} from "drizzle-orm";
 
 import { db } from "../db/db";
 import { users } from "../db/schema";
+import { employeeRuntimeState } from "../db/applianceSchema";
 import { signMobileToken } from "./jwt";
 
 export default function setupAuthRoutes(app: Express) {
@@ -36,6 +40,10 @@ export default function setupAuthRoutes(app: Express) {
           });
         }
 
+        console.log(
+          `[AUTH] Login attempt: ${loginIdentifier}`,
+        );
+
         const [user] = await db
           .select()
           .from(users)
@@ -53,8 +61,6 @@ export default function setupAuthRoutes(app: Express) {
           )
           .limit(1);
 
-        // Deliberately generic so login does not reveal whether
-        // an employee ID exists.
         if (!user || !user.isSalesAppUser) {
           return res.status(401).json({
             success: false,
@@ -78,24 +84,26 @@ export default function setupAuthRoutes(app: Express) {
             user.salesAppPasswordHash,
           );
         } else if (user.salesAppPassword) {
-          // Temporary compatibility path for existing accounts.
           passwordMatches =
-            user.salesAppPassword === String(password);
+            user.salesAppPassword ===
+            String(password);
 
-          // Successful legacy login automatically migrates the
-          // password to bcrypt and removes the plaintext value.
           if (passwordMatches) {
-            const migratedHash = await bcrypt.hash(
-              String(password),
-              12,
-            );
+            const migratedHash =
+              await bcrypt.hash(
+                String(password),
+                12,
+              );
 
             await db
               .update(users)
               .set({
-                salesAppPasswordHash: migratedHash,
-                salesAppPassword: null,
-                updatedAt: new Date().toISOString(),
+                salesAppPasswordHash:
+                  migratedHash,
+                salesAppPassword:
+                  null,
+                updatedAt:
+                  new Date().toISOString(),
               })
               .where(eq(users.id, user.id));
           }
@@ -108,6 +116,25 @@ export default function setupAuthRoutes(app: Express) {
           });
         }
 
+        const now = new Date();
+
+        await db
+          .insert(employeeRuntimeState)
+          .values({
+            userId: user.id,
+            lastLoginAt: now,
+            lastSeenAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: employeeRuntimeState.userId,
+            set: {
+              lastLoginAt: now,
+              lastSeenAt: now,
+              updatedAt: now,
+            },
+          });
+
         const token = signMobileToken({
           userId: user.id,
           email: user.email,
@@ -118,25 +145,34 @@ export default function setupAuthRoutes(app: Express) {
           zone: user.zone,
         });
 
+        console.log(
+          `[AUTH] Login success: userId=${user.id}, employee=${user.salesmanLoginId}`,
+        );
+
         return res.status(200).json({
           success: true,
           token,
           user: {
             id: user.id,
-            employeeCode: user.salesmanLoginId,
+            employeeCode:
+              user.salesmanLoginId,
             username: user.username,
             displayName:
               user.displayName ??
               user.username ??
               user.salesmanLoginId,
             email: user.email,
-            phoneNumber: user.phoneNumber,
+            phoneNumber:
+              user.phoneNumber,
             role: user.role,
-            department: user.department,
-            designation: user.designation,
+            department:
+              user.department,
+            designation:
+              user.designation,
             area: user.area,
             zone: user.zone,
-            isSalesAppUser: user.isSalesAppUser,
+            isSalesAppUser:
+              user.isSalesAppUser,
           },
         });
       } catch (error) {

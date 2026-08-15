@@ -1,12 +1,7 @@
-import jwt from "jsonwebtoken";
-
-const JWT_SECRET = process.env.JWT_SECRET;
-
-if (!JWT_SECRET) {
-  throw new Error(
-    "JWT_SECRET must be set. Refusing to start with an insecure fallback secret.",
-  );
-}
+import jwt, {
+  type JwtPayload,
+  type Secret,
+} from "jsonwebtoken";
 
 export interface MobileJwtPayload {
   userId: number;
@@ -18,12 +13,86 @@ export interface MobileJwtPayload {
   zone?: string | null;
 }
 
-export function signMobileToken(payload: MobileJwtPayload): string {
-  return jwt.sign(payload, JWT_SECRET, {
-    expiresIn: "7d",
-  });
+function getJwtSecret(): Secret {
+  const secret =
+    process.env.JWT_SECRET;
+
+  if (!secret) {
+    throw new Error(
+      "JWT_SECRET must be set. Refusing to sign or verify tokens without a secret.",
+    );
+  }
+
+  return secret;
 }
 
-export function verifyMobileToken(token: string): MobileJwtPayload {
-  return jwt.verify(token, JWT_SECRET) as MobileJwtPayload;
+function isMobileJwtPayload(
+  value: JwtPayload,
+): value is JwtPayload & MobileJwtPayload {
+  return (
+    Number.isInteger(value.userId) &&
+    typeof value.email === "string" &&
+    (
+      typeof value.username === "string" ||
+      value.username === null
+    ) &&
+    typeof value.orgRole === "string" &&
+    (
+      value.phoneNumber === undefined ||
+      value.phoneNumber === null ||
+      typeof value.phoneNumber === "string"
+    ) &&
+    (
+      value.area === undefined ||
+      value.area === null ||
+      typeof value.area === "string"
+    ) &&
+    (
+      value.zone === undefined ||
+      value.zone === null ||
+      typeof value.zone === "string"
+    )
+  );
+}
+
+export function signMobileToken(
+  payload: MobileJwtPayload,
+): string {
+  return jwt.sign(
+    payload,
+    getJwtSecret(),
+    {
+      expiresIn: "7d",
+    },
+  );
+}
+
+export function verifyMobileToken(
+  token: string,
+): MobileJwtPayload {
+  const decoded =
+    jwt.verify(
+      token,
+      getJwtSecret(),
+    );
+
+  if (
+    typeof decoded === "string" ||
+    !isMobileJwtPayload(decoded)
+  ) {
+    throw new Error(
+      "Invalid mobile token payload.",
+    );
+  }
+
+  return {
+    userId: decoded.userId,
+    email: decoded.email,
+    username: decoded.username,
+    orgRole: decoded.orgRole,
+    phoneNumber:
+      decoded.phoneNumber,
+    area: decoded.area,
+    zone: decoded.zone,
+  };
 }

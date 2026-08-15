@@ -14,10 +14,11 @@ dotenv.config({
   ),
 });
 
-// AUTH + MOBILE WORKSPACE
+// AUTH + APPLIANCE CONTROL PLANE
 import setupAuthRoutes from "./src/auth/login";
 import setupMobileBootstrapRoutes from "./src/auth/bootstrap";
-import setupMobileWorkspaceAdminRoutes from "./src/admin/mobileWorkspace";
+import setupApplianceAdminRoutes from "./src/admin/appliance";
+import setupMobileApplianceRoutes from "./src/mobile/appliance";
 
 // PHOTO UPLOAD
 import setupUploadRoutes from "./src/photoUpload/upload";
@@ -61,122 +62,104 @@ import setupTadaBillUpdateRoutes from "./src/updateRoutes/tadabill";
 const app: Express = express();
 
 const DEFAULT_PORT = 8000;
-
 const parsedPort = Number.parseInt(
-  process.env.PORT ??
-    String(DEFAULT_PORT),
+  process.env.PORT ?? String(DEFAULT_PORT),
   10,
 );
-
 const PORT =
   Number.isNaN(parsedPort)
     ? DEFAULT_PORT
     : parsedPort;
 
-// -------------------------------------------------------
-// GLOBAL MIDDLEWARE
-// -------------------------------------------------------
-
 app.use(cors());
 
 app.use(
   express.json({
-    limit: "2mb",
+    limit: "4mb",
   }),
 );
 
-// -------------------------------------------------------
 // REQUEST LOGGER
-// -------------------------------------------------------
-
 app.use(
   (
     req: Request,
     res: Response,
     next,
   ) => {
-    const startedAt =
-      Date.now();
-
+    const startedAt = Date.now();
     const requestTime =
       new Date().toISOString();
 
-    res.on(
-      "finish",
-      () => {
-        const duration =
-          Date.now() -
-          startedAt;
+    res.on("finish", () => {
+      const duration =
+        Date.now() - startedAt;
+      const status =
+        res.statusCode;
 
-        const status =
-          res.statusCode;
+      const marker =
+        status >= 500
+          ? "❌"
+          : status >= 400
+            ? "⚠️"
+            : "✅";
 
-        const statusMarker =
-          status >= 500
-            ? "❌"
-            : status >= 400
-              ? "⚠️"
-              : "✅";
-
-        console.log(
-          [
-            statusMarker,
-            requestTime,
-            req.method,
-            req.originalUrl,
-            `-> ${status}`,
-            `(${duration}ms)`,
-          ].join(" "),
-        );
-      },
-    );
+      console.log(
+        [
+          marker,
+          requestTime,
+          req.method,
+          req.originalUrl,
+          `-> ${status}`,
+          `(${duration}ms)`,
+        ].join(" "),
+      );
+    });
 
     next();
   },
 );
-
-// -------------------------------------------------------
-// HEALTH CHECK
-// -------------------------------------------------------
 
 app.get(
   "/",
   (
     _req: Request,
     res: Response,
-  ) => {
-    return res
-      .status(200)
-      .json({
-        success: true,
-        message:
-          "Kamdhenu Sales App Backend",
-        service:
-          "salesapp_backend",
-        port: PORT,
-      });
-  },
+  ) =>
+    res.status(200).json({
+      success: true,
+      message:
+        "Kamdhenu FieldForce Appliance Backend",
+      service:
+        "salesapp_backend",
+      port: PORT,
+      capabilities: {
+        employeeLifecycle:
+          true,
+        dynamicResponsibilities:
+          true,
+        inheritedAssignments:
+          true,
+        workAssignments:
+          true,
+        approvals: true,
+        adminOwnershipFallback:
+          true,
+        adaptiveAdminHome:
+          true,
+        devices: true,
+        dynamicSubmissions:
+          true,
+      },
+    }),
 );
 
-// -------------------------------------------------------
-// FLOW 1
-// AUTH -> BOOTSTRAP -> DYNAMIC RESPONSIBILITIES
-// -------------------------------------------------------
-
+// AUTH + APPLIANCE
 setupAuthRoutes(app);
+setupMobileBootstrapRoutes(app);
+setupMobileApplianceRoutes(app);
+setupApplianceAdminRoutes(app);
 
-setupMobileBootstrapRoutes(
-  app,
-);
-
-setupMobileWorkspaceAdminRoutes(
-  app,
-);
-
-// -------------------------------------------------------
 // EXISTING GET ROUTES
-// -------------------------------------------------------
-
 setupDealerRoutes(app);
 setupDvrRoutes(app);
 setupPjpRoutes(app);
@@ -188,10 +171,7 @@ setupDistributorRoutes(app);
 setupOutletRoutes(app);
 setupTadaBillRoutes(app);
 
-// -------------------------------------------------------
 // EXISTING POST ROUTES
-// -------------------------------------------------------
-
 setupAttendanceInRoutes(app);
 setupAttendanceOutRoutes(app);
 setupDealerPostRoutes(app);
@@ -204,10 +184,7 @@ setupDistributorPostRoutes(app);
 setupOutletPostRoutes(app);
 setupTadaBillPostRoutes(app);
 
-// -------------------------------------------------------
 // EXISTING UPDATE ROUTES
-// -------------------------------------------------------
-
 setupDealerUpdateRoutes(app);
 setupDvrUpdateRoutes(app);
 setupLeaveUpdateRoutes(app);
@@ -218,46 +195,35 @@ setupDistributorUpdateRoutes(app);
 setupOutletUpdateRoutes(app);
 setupTadaBillUpdateRoutes(app);
 
-// -------------------------------------------------------
-// PHOTO UPLOAD ROUTES
-// -------------------------------------------------------
-
+// PHOTO UPLOAD
 setupUploadRoutes(app);
 
-// -------------------------------------------------------
-// 404 HANDLER
-// -------------------------------------------------------
-
+// 404
 app.use(
   (
     req: Request,
     res: Response,
-  ) => {
-    return res.status(404).json({
+  ) =>
+    res.status(404).json({
       success: false,
       error: "Route not found.",
       method: req.method,
       path: req.originalUrl,
-    });
-  },
+    }),
 );
-
-// -------------------------------------------------------
-// START SERVER
-// -------------------------------------------------------
 
 app.listen(
   PORT,
   () => {
     console.log("");
     console.log(
-      "========================================",
+      "==============================================",
     );
     console.log(
-      " KAMDHENU SALES APP BACKEND",
+      " KAMDHENU FIELDFORCE APPLIANCE BACKEND",
     );
     console.log(
-      "========================================",
+      "==============================================",
     );
     console.log(
       ` Server: http://localhost:${PORT}`,
@@ -266,10 +232,13 @@ app.listen(
       ` Mode:   ${process.env.NODE_ENV ?? "development"}`,
     );
     console.log(
-      " Logging: ENABLED",
+      " Control Plane: READY",
     );
     console.log(
-      "========================================",
+      " Request Logging: ENABLED",
+    );
+    console.log(
+      "==============================================",
     );
     console.log("");
   },
