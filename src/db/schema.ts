@@ -25,6 +25,10 @@ export const users = myCustomSchema.table("users", {
 	isSalesAppUser: boolean("is_sales_app_user").default(false).notNull(),
 	salesmanLoginId: text("salesman_login_id"),
 	salesAppPassword: text("sales_app_password"),
+	displayName: varchar("display_name", { length: 160 }),
+	department: varchar("department", { length: 160 }),
+	designation: varchar("designation", { length: 160 }),
+	salesAppPasswordHash: text("sales_app_password_hash"),
 
 	reportsToId: integer("reports_to_id"),
 	deviceId: varchar("device_id", { length: 255 }),
@@ -97,72 +101,147 @@ export const dealers = myCustomSchema.table("dealers", {
 	index("idx_verified_pincode").on(t.pinCode),
 	index("idx_verified_gst").on(t.gstNo),
 	foreignKey({
-        columns: [t.userId],
-        foreignColumns: [users.id],
-        name: "dealers_user_id_fkey",
-    }).onDelete("restrict").onUpdate("cascade"),
+		columns: [t.userId],
+		foreignColumns: [users.id],
+		name: "dealers_user_id_fkey",
+	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
+export const mobileCapabilities = myCustomSchema.table(
+	"mobile_capabilities",
+	{
+		id: serial("id").primaryKey(),
+
+		key: varchar("key", { length: 120 }).notNull(),
+
+		title: varchar("title", { length: 160 }).notNull(),
+
+		type: varchar("type", { length: 50 }).notNull(),
+
+		description: text("description"),
+
+		icon: varchar("icon", { length: 80 }),
+
+		config: jsonb("config")
+			.$type<Record<string, unknown>>()
+			.notNull()
+			.default(sql`'{}'::jsonb`),
+
+		isActive: boolean("is_active")
+			.notNull()
+			.default(true),
+
+		createdAt: timestamp("created_at", {
+			withTimezone: true,
+		})
+			.notNull()
+			.defaultNow(),
+
+		updatedAt: timestamp("updated_at", {
+			withTimezone: true,
+		})
+			.notNull()
+			.defaultNow(),
+	},
+	(table) => [
+		uniqueIndex("mobile_capabilities_key_key")
+			.on(table.key),
+	],
+);
+
+export const userMobileCapabilities = myCustomSchema.table(
+	"user_mobile_capabilities",
+	{
+		userId: integer("user_id").notNull(),
+
+		capabilityId: integer("capability_id").notNull(),
+
+		sortOrder: integer("sort_order")
+			.notNull()
+			.default(0),
+	},
+	(table) => [
+		primaryKey({
+			columns: [
+				table.userId,
+				table.capabilityId,
+			],
+		}),
+
+		foreignKey({
+			columns: [table.userId],
+			foreignColumns: [users.id],
+			name: "user_mobile_capabilities_user_id_fkey",
+		}).onDelete("cascade"),
+
+		foreignKey({
+			columns: [table.capabilityId],
+			foreignColumns: [mobileCapabilities.id],
+			name: "user_mobile_capabilities_capability_id_fkey",
+		}).onDelete("cascade"),
+	],
+);
+
 export const distributors = myCustomSchema.table("distributors", {
-    id: serial("id").primaryKey(),
-    userId: integer("user_id"), 
-    name: varchar("name", { length: 255 }).notNull(),
-    concernedPersonName: varchar("concerned_person_name", { length: 255 }).notNull(),
-    concernedPersonPhoneNum: varchar("concerned_person_phone_num", { length: 50 }).notNull(),
-    area: varchar("area", { length: 120 }),
-    zone: varchar("zone", { length: 120 }),
-    state: varchar("state", { length: 100 }),
-    district: varchar("district", { length: 120 }),
-    city: varchar("city", { length: 120 }),
-    address: varchar("address", { length: 500 }).notNull(),
-    pinCode: varchar("pin_code", { length: 20 }),
-    latitude: numeric("latitude", { precision: 10, scale: 7 }),
-    longitude: numeric("longitude", { precision: 10, scale: 7 }),
-    gstNumber: varchar("gst_number", { length: 50 }),
-    storeImage: varchar("store_image", { length: 500 }),
-    date: date("date"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+	id: serial("id").primaryKey(),
+	userId: integer("user_id"),
+	name: varchar("name", { length: 255 }).notNull(),
+	concernedPersonName: varchar("concerned_person_name", { length: 255 }).notNull(),
+	concernedPersonPhoneNum: varchar("concerned_person_phone_num", { length: 50 }).notNull(),
+	area: varchar("area", { length: 120 }),
+	zone: varchar("zone", { length: 120 }),
+	state: varchar("state", { length: 100 }),
+	district: varchar("district", { length: 120 }),
+	city: varchar("city", { length: 120 }),
+	address: varchar("address", { length: 500 }).notNull(),
+	pinCode: varchar("pin_code", { length: 20 }),
+	latitude: numeric("latitude", { precision: 10, scale: 7 }),
+	longitude: numeric("longitude", { precision: 10, scale: 7 }),
+	gstNumber: varchar("gst_number", { length: 50 }),
+	storeImage: varchar("store_image", { length: 500 }),
+	date: date("date"),
+	createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
-    foreignKey({
-        columns: [t.userId],
-        foreignColumns: [users.id],
-        name: "distributors_user_id_fkey",
-    }).onDelete("restrict").onUpdate("cascade"),
+	foreignKey({
+		columns: [t.userId],
+		foreignColumns: [users.id],
+		name: "distributors_user_id_fkey",
+	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
 export const outlets = myCustomSchema.table("outlets", {
-    id: serial("id").primaryKey(),
-    distributorId: integer("distributor_id"),
-    userId: integer("user_id"), 
-    name: varchar("name", { length: 255 }).notNull(),
-    concernedPersonName: varchar("concerned_person_name", { length: 255 }).notNull(),
-    concernedPersonPhoneNum: varchar("concerned_person_phone_num", { length: 50 }).notNull(),
-    area: varchar("area", { length: 120 }),
-    zone: varchar("zone", { length: 120 }),
-    state: varchar("state", { length: 100 }),
-    district: varchar("district", { length: 120 }),
-    city: varchar("city", { length: 120 }),
-    address: varchar("address", { length: 500 }).notNull(),
-    pinCode: varchar("pin_code", { length: 20 }),
-    latitude: numeric("latitude", { precision: 10, scale: 7 }),
-    longitude: numeric("longitude", { precision: 10, scale: 7 }),
-    gstNumber: varchar("gst_number", { length: 50 }),
-    storeImage: varchar("store_image", { length: 500 }), 
-    date: date("date"),
-    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+	id: serial("id").primaryKey(),
+	distributorId: integer("distributor_id"),
+	userId: integer("user_id"),
+	name: varchar("name", { length: 255 }).notNull(),
+	concernedPersonName: varchar("concerned_person_name", { length: 255 }).notNull(),
+	concernedPersonPhoneNum: varchar("concerned_person_phone_num", { length: 50 }).notNull(),
+	area: varchar("area", { length: 120 }),
+	zone: varchar("zone", { length: 120 }),
+	state: varchar("state", { length: 100 }),
+	district: varchar("district", { length: 120 }),
+	city: varchar("city", { length: 120 }),
+	address: varchar("address", { length: 500 }).notNull(),
+	pinCode: varchar("pin_code", { length: 20 }),
+	latitude: numeric("latitude", { precision: 10, scale: 7 }),
+	longitude: numeric("longitude", { precision: 10, scale: 7 }),
+	gstNumber: varchar("gst_number", { length: 50 }),
+	storeImage: varchar("store_image", { length: 500 }),
+	date: date("date"),
+	createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
-    foreignKey({
-        columns: [t.distributorId],
-        foreignColumns: [distributors.id],
-        name: "outlets_distributor_id_fkey",
-    }).onDelete("set null").onUpdate("cascade"),
-    foreignKey({
-        columns: [t.userId],
-        foreignColumns: [users.id],
-        name: "outlets_user_id_fkey",
-    }).onDelete("restrict").onUpdate("cascade"),
+	foreignKey({
+		columns: [t.distributorId],
+		foreignColumns: [distributors.id],
+		name: "outlets_distributor_id_fkey",
+	}).onDelete("set null").onUpdate("cascade"),
+	foreignKey({
+		columns: [t.userId],
+		foreignColumns: [users.id],
+		name: "outlets_user_id_fkey",
+	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
 export const institutions = myCustomSchema.table("instititions", {
@@ -191,10 +270,10 @@ export const institutions = myCustomSchema.table("instititions", {
 	index("idx_institute_verified_pincode").on(t.pinCode),
 	index("idx_institute_verified_gst").on(t.gstNo),
 	foreignKey({
-        columns: [t.userId],
-        foreignColumns: [users.id],
-        name: "institutions_user_id_fkey",
-    }).onDelete("restrict").onUpdate("cascade"),
+		columns: [t.userId],
+		foreignColumns: [users.id],
+		name: "institutions_user_id_fkey",
+	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
 export const influencers = myCustomSchema.table("influencers", {
@@ -219,10 +298,10 @@ export const influencers = myCustomSchema.table("influencers", {
 	index("idx_influencer_verified_district").on(t.district),
 	index("idx_influencer_verified_pincode").on(t.pinCode),
 	foreignKey({
-        columns: [t.userId],
-        foreignColumns: [users.id],
-        name: "influencers_user_id_fkey",
-    }).onDelete("restrict").onUpdate("cascade"),
+		columns: [t.userId],
+		foreignColumns: [users.id],
+		name: "influencers_user_id_fkey",
+	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
 export const permanentJourneyPlans = myCustomSchema.table("permanent_journey_plans", {
@@ -238,8 +317,8 @@ export const permanentJourneyPlans = myCustomSchema.table("permanent_journey_pla
 	route: varchar({ length: 500 }),
 	diversionReason: varchar("diversion_reason", { length: 500 }),
 	noOfDealerVisits: integer("no_of_dealer_visits"),
-    noOfInstitutionVisits: integer("no_of_institution_visits"),
-    noOfInfluencerVisits: integer("no_of_influencer_visits"),
+	noOfInstitutionVisits: integer("no_of_institution_visits"),
+	noOfInfluencerVisits: integer("no_of_influencer_visits"),
 	dealerId: integer("dealer_id"),
 	bulkOpId: varchar("bulk_op_id", { length: 50 }),
 	institutionId: integer("institution_id"),
@@ -523,48 +602,48 @@ export const syncState = myCustomSchema.table("sync_state", {
 
 // ---- TA DA ----
 export const tadaBills = myCustomSchema.table("ta_da_bills", {
-    id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
-    userId: integer("user_id").notNull(),
+	id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
+	userId: integer("user_id").notNull(),
 	fromDate: date("from_date"),
 	toDate: date("to_date"),
-    billDate: date("bill_date").notNull(),
-    dailyAllowance: numeric("daily_allowance", { precision: 18, scale: 2 }).default('0'),
-    totalCost: numeric("total_cost", { precision: 18, scale: 2 }).default('0'),
-    status: varchar("status", { length: 50 }).default('PENDING'), 
-    remarks: text("remarks"),
-    createdAt: timestamp("created_at", { withTimezone: true, precision: 6 }).defaultNow().notNull(),
-    updatedAt: timestamp("updated_at", { withTimezone: true, precision: 6 }).defaultNow().notNull(),
+	billDate: date("bill_date").notNull(),
+	dailyAllowance: numeric("daily_allowance", { precision: 18, scale: 2 }).default('0'),
+	totalCost: numeric("total_cost", { precision: 18, scale: 2 }).default('0'),
+	status: varchar("status", { length: 50 }).default('PENDING'),
+	remarks: text("remarks"),
+	createdAt: timestamp("created_at", { withTimezone: true, precision: 6 }).defaultNow().notNull(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, precision: 6 }).defaultNow().notNull(),
 }, (t) => [
-    index("idx_ta_da_bills_user_id").on(t.userId),
-    foreignKey({
-        columns: [t.userId],
-        foreignColumns: [users.id],
-        name: "ta_da_bills_user_id_fkey",
-    }).onDelete("cascade"),
+	index("idx_ta_da_bills_user_id").on(t.userId),
+	foreignKey({
+		columns: [t.userId],
+		foreignColumns: [users.id],
+		name: "ta_da_bills_user_id_fkey",
+	}).onDelete("cascade"),
 ]);
 
 export const tadaBillItems = myCustomSchema.table("ta_da_bill_items", {
-    id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
-    billId: varchar("bill_id", { length: 255 }).notNull(),
-    
-    fromLocation: varchar("from_location", { length: 255 }),
-    toLocation: varchar("to_location", { length: 255 }),
-    distanceTravelled: numeric("distance_travelled_km", { precision: 18, scale: 2 }),
-    
-    transportFare: numeric("transport_fare", { precision: 18, scale: 2 }).default('0'),
-    lodgingFare: numeric("lodging_fare", { precision: 18, scale: 2 }).default('0'),
-    foodingFare: numeric("fooding_fare", { precision: 18, scale: 2 }).default('0'),
-    localConveyance: numeric("local_conveyance", { precision: 18, scale: 2 }).default('0'),
-    outOfPocketPaid: numeric("out_of_pocket_paid", { precision: 18, scale: 2 }).default('0'),
-    
-    totalBillsAdded: integer("total_bills_added").default(0),
+	id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
+	billId: varchar("bill_id", { length: 255 }).notNull(),
+
+	fromLocation: varchar("from_location", { length: 255 }),
+	toLocation: varchar("to_location", { length: 255 }),
+	distanceTravelled: numeric("distance_travelled_km", { precision: 18, scale: 2 }),
+
+	transportFare: numeric("transport_fare", { precision: 18, scale: 2 }).default('0'),
+	lodgingFare: numeric("lodging_fare", { precision: 18, scale: 2 }).default('0'),
+	foodingFare: numeric("fooding_fare", { precision: 18, scale: 2 }).default('0'),
+	localConveyance: numeric("local_conveyance", { precision: 18, scale: 2 }).default('0'),
+	outOfPocketPaid: numeric("out_of_pocket_paid", { precision: 18, scale: 2 }).default('0'),
+
+	totalBillsAdded: integer("total_bills_added").default(0),
 	billPhotoUrls: text("bill_photo_urls").array(),
-    remarks: text("remarks"),
+	remarks: text("remarks"),
 }, (t) => [
-    index("idx_ta_da_bill_items_bill_id").on(t.billId),
-    foreignKey({
-        columns: [t.billId],
-        foreignColumns: [tadaBills.id],
-        name: "ta_da_bill_items_bill_id_fkey",
-    }).onDelete("cascade"),
+	index("idx_ta_da_bill_items_bill_id").on(t.billId),
+	foreignKey({
+		columns: [t.billId],
+		foreignColumns: [tadaBills.id],
+		name: "ta_da_bill_items_bill_id_fkey",
+	}).onDelete("cascade"),
 ]);
