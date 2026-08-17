@@ -8,7 +8,6 @@ import {
   inArray,
 } from "drizzle-orm";
 
-import { db } from "../db/db";
 import {
   mobileCapabilities,
   userMobileCapabilities,
@@ -19,7 +18,11 @@ import {
   employeeRuntimeState,
   workItems,
 } from "../db/applianceSchema";
-import type { AdminRequest } from "../middleware/adminService";
+import type { AppDatabase } from "../db/db";
+import {
+  withAdminTenantDb,
+  type AdminRequest,
+} from "../middleware/adminService";
 import { getResolvedCapabilitiesForUser } from "../services/capabilityResolver";
 import { writeAudit } from "../services/audit";
 
@@ -39,7 +42,7 @@ function normalizeIds(raw: unknown): number[] {
   );
 }
 
-async function validateCapabilityIds(ids: number[]) {
+async function validateCapabilityIds(db: AppDatabase, ids: number[]) {
   if (ids.length === 0) return;
 
   const rows = await db
@@ -53,7 +56,7 @@ async function validateCapabilityIds(ids: number[]) {
 }
 
 export function registerEmployeeAdminRoutes(router: Router) {
-  router.get("/employees", async (_req: AdminRequest, res) => {
+  router.get("/employees", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     try {
       const employees = await db
         .select({
@@ -110,9 +113,9 @@ export function registerEmployeeAdminRoutes(router: Router) {
         error: "Unable to load employees.",
       });
     }
-  });
+  }));
 
-  router.get("/employees/:id", async (req: AdminRequest, res) => {
+  router.get("/employees/:id", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const userId = Number(req.params.id);
 
     if (!Number.isInteger(userId) || userId <= 0) {
@@ -143,7 +146,7 @@ export function registerEmployeeAdminRoutes(router: Router) {
         recentWork,
         runtime,
       ] = await Promise.all([
-        getResolvedCapabilitiesForUser(userId),
+        getResolvedCapabilitiesForUser(db, userId),
 
         db
           .select({
@@ -211,9 +214,9 @@ export function registerEmployeeAdminRoutes(router: Router) {
         error: "Unable to load employee.",
       });
     }
-  });
+  }));
 
-  router.post("/employees", async (req: AdminRequest, res) => {
+  router.post("/employees", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const {
       employeeCode,
       password,
@@ -241,57 +244,58 @@ export function registerEmployeeAdminRoutes(router: Router) {
 
     try {
       const ids = normalizeIds(capabilityIds);
-      await validateCapabilityIds(ids);
+      await validateCapabilityIds(db, ids);
 
       const passwordHash = await bcrypt.hash(String(password), 12);
 
-      const employee = await db.transaction(async (tx) => {
-        const managerId = Number(reportsToId);
+      // No nested db.transaction(): db is already inside the transaction
+      // withAdminTenantDb opened, so this insert + capability rows are
+      // already atomic within it.
+      const managerId = Number(reportsToId);
 
-        const [created] = await tx
-          .insert(users)
-          .values({
-            email:
-              String(email ?? "").trim() ||
-              `${normalizedCode.toLowerCase()}@mobile.local`,
-            username: normalizedName,
-            displayName: normalizedName,
-            phoneNumber: String(phoneNumber ?? "").trim() || null,
-            department: String(department ?? "").trim() || null,
-            designation: String(designation ?? "").trim() || null,
-            role:
-              String(role ?? "").trim() ||
-              String(designation ?? "").trim() ||
-              "EMPLOYEE",
-            status: "active",
-            area: String(area ?? "").trim() || null,
-            zone: String(zone ?? "").trim() || null,
-            reportsToId:
-              Number.isInteger(managerId) && managerId > 0
-                ? managerId
-                : null,
-            isSalesAppUser: true,
-            salesmanLoginId: normalizedCode,
-            salesAppPassword: null,
-            salesAppPasswordHash: passwordHash,
-            updatedAt: new Date().toISOString(),
-          })
-          .returning();
+      const [created] = await db
+        .insert(users)
+        .values({
+          email:
+            String(email ?? "").trim() ||
+            `${normalizedCode.toLowerCase()}@mobile.local`,
+          username: normalizedName,
+          displayName: normalizedName,
+          phoneNumber: String(phoneNumber ?? "").trim() || null,
+          department: String(department ?? "").trim() || null,
+          designation: String(designation ?? "").trim() || null,
+          role:
+            String(role ?? "").trim() ||
+            String(designation ?? "").trim() ||
+            "EMPLOYEE",
+          status: "active",
+          area: String(area ?? "").trim() || null,
+          zone: String(zone ?? "").trim() || null,
+          reportsToId:
+            Number.isInteger(managerId) && managerId > 0
+              ? managerId
+              : null,
+          isSalesAppUser: true,
+          salesmanLoginId: normalizedCode,
+          salesAppPassword: null,
+          salesAppPasswordHash: passwordHash,
+          updatedAt: new Date().toISOString(),
+        })
+        .returning();
 
-        if (ids.length) {
-          await tx.insert(userMobileCapabilities).values(
-            ids.map((capabilityId, index) => ({
-              userId: created.id,
-              capabilityId,
-              sortOrder: index,
-            })),
-          );
-        }
+      if (ids.length) {
+        await db.insert(userMobileCapabilities).values(
+          ids.map((capabilityId, index) => ({
+            userId: created.id,
+            capabilityId,
+            sortOrder: index,
+          })),
+        );
+      }
 
-        return created;
-      });
+      const employee = created;
 
-      await writeAudit({
+      await writeAudit(db, {
         actorUserId: req.adminActor?.userId,
         action: "employee.create",
         entityType: "employee",
@@ -320,9 +324,9 @@ export function registerEmployeeAdminRoutes(router: Router) {
         error: error?.message ?? "Unable to create employee.",
       });
     }
-  });
+  }));
 
-  router.patch("/employees/:id", async (req: AdminRequest, res) => {
+  router.patch("/employees/:id", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const userId = Number(req.params.id);
 
     if (!Number.isInteger(userId) || userId <= 0) {
@@ -388,7 +392,7 @@ export function registerEmployeeAdminRoutes(router: Router) {
       .where(eq(users.id, userId))
       .returning();
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "employee.update",
       entityType: "employee",
@@ -401,9 +405,9 @@ export function registerEmployeeAdminRoutes(router: Router) {
       success: true,
       employee: updated,
     });
-  });
+  }));
 
-  router.post("/employees/:id/status", async (req: AdminRequest, res) => {
+  router.post("/employees/:id/status", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const userId = Number(req.params.id);
     const status = String(req.body?.status ?? "").trim();
 
@@ -444,7 +448,7 @@ export function registerEmployeeAdminRoutes(router: Router) {
         .where(eq(deviceRegistrations.userId, userId));
     }
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "employee.status_change",
       entityType: "employee",
@@ -456,11 +460,11 @@ export function registerEmployeeAdminRoutes(router: Router) {
       success: true,
       employee: updated,
     });
-  });
+  }));
 
   router.post(
     "/employees/:id/reset-password",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const userId = Number(req.params.id);
       const password = String(req.body?.password ?? "");
 
@@ -503,7 +507,7 @@ export function registerEmployeeAdminRoutes(router: Router) {
         })
         .where(eq(deviceRegistrations.userId, userId));
 
-      await writeAudit({
+      await writeAudit(db, {
         actorUserId: req.adminActor?.userId,
         action: "employee.password_reset",
         entityType: "employee",
@@ -511,12 +515,12 @@ export function registerEmployeeAdminRoutes(router: Router) {
       });
 
       return res.json({ success: true });
-    },
+    }),
   );
 
   router.put(
     "/employees/:id/capabilities",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const userId = Number(req.params.id);
 
       if (!Number.isInteger(userId) || userId <= 0) {
@@ -529,41 +533,41 @@ export function registerEmployeeAdminRoutes(router: Router) {
       const ids = normalizeIds(req.body?.capabilityIds);
 
       try {
-        await validateCapabilityIds(ids);
+        await validateCapabilityIds(db, ids);
 
-        await db.transaction(async (tx) => {
-          const [employee] = await tx
-            .select({
-              id: users.id,
-              mobile: users.isSalesAppUser,
-            })
-            .from(users)
-            .where(eq(users.id, userId))
-            .limit(1);
+        // No nested db.transaction() -- same reasoning as the POST
+        // /employees route above.
+        const [employee] = await db
+          .select({
+            id: users.id,
+            mobile: users.isSalesAppUser,
+          })
+          .from(users)
+          .where(eq(users.id, userId))
+          .limit(1);
 
-          if (!employee || !employee.mobile) {
-            throw new Error("Mobile employee not found.");
-          }
+        if (!employee || !employee.mobile) {
+          throw new Error("Mobile employee not found.");
+        }
 
-          await tx
-            .delete(userMobileCapabilities)
-            .where(eq(userMobileCapabilities.userId, userId));
+        await db
+          .delete(userMobileCapabilities)
+          .where(eq(userMobileCapabilities.userId, userId));
 
-          if (ids.length) {
-            await tx.insert(userMobileCapabilities).values(
-              ids.map((capabilityId, index) => ({
-                userId,
-                capabilityId,
-                sortOrder: index,
-              })),
-            );
-          }
-        });
+        if (ids.length) {
+          await db.insert(userMobileCapabilities).values(
+            ids.map((capabilityId, index) => ({
+              userId,
+              capabilityId,
+              sortOrder: index,
+            })),
+          );
+        }
 
         const resolved =
-          await getResolvedCapabilitiesForUser(userId);
+          await getResolvedCapabilitiesForUser(db, userId);
 
-        await writeAudit({
+        await writeAudit(db, {
           actorUserId: req.adminActor?.userId,
           action: "employee.capabilities_replace",
           entityType: "employee",
@@ -587,6 +591,6 @@ export function registerEmployeeAdminRoutes(router: Router) {
             "Unable to update employee responsibilities.",
         });
       }
-    },
+    }),
   );
 }

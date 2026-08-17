@@ -5,6 +5,7 @@ import jwt, {
 
 export interface MobileJwtPayload {
   userId: number;
+  schemaName: string;
   email: string;
   username: string | null;
   orgRole: string;
@@ -31,6 +32,7 @@ function isMobileJwtPayload(
 ): value is JwtPayload & MobileJwtPayload {
   return (
     Number.isInteger(value.userId) &&
+    typeof value.schemaName === "string" &&
     typeof value.email === "string" &&
     (
       typeof value.username === "string" ||
@@ -87,6 +89,7 @@ export function verifyMobileToken(
 
   return {
     userId: decoded.userId,
+    schemaName: decoded.schemaName,
     email: decoded.email,
     username: decoded.username,
     orgRole: decoded.orgRole,

@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 
-import { db } from "../db/db";
+import type { AppDatabase } from "../db/db";
 import {
   mobileCapabilities,
   userMobileCapabilities,
@@ -74,6 +74,7 @@ function sourceKind(subjectType: string): ResolvedCapability["source"]["kind"] {
 }
 
 export async function getResolvedCapabilitiesForUser(
+  db: AppDatabase,
   userId: number,
 ): Promise<ResolvedCapability[]> {
   const [employee] = await db

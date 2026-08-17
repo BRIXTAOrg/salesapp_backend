@@ -5,7 +5,7 @@ import {
   gte,
 } from "drizzle-orm";
 
-import { db } from "../db/db";
+import type { AppDatabase } from "../db/db";
 import {
   usageEvents,
   userPins,
@@ -15,6 +15,7 @@ import type {
 } from "./capabilityResolver";
 
 export async function rankMobileCapabilities(
+  db: AppDatabase,
   userId: number,
   capabilities: ResolvedCapability[],
 ) {

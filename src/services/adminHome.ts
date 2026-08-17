@@ -7,8 +7,9 @@ import {
   sql,
 } from "drizzle-orm";
 
-import { db, pool } from "../db/db";
+import type { AppDatabase } from "../db/db";
 import {
+  mobileCapabilities,
   salesmanAttendance,
   salesmanLeaveApplications,
   tadaBills,
@@ -25,7 +26,7 @@ import {
 import { getResolvedCapabilitiesForUser } from "./capabilityResolver";
 import { ADMIN_ACTION_CATALOG } from "./adminCatalog";
 
-export async function getSetupHealth() {
+export async function getSetupHealth(db: AppDatabase) {
   const activeEmployees = await db
     .select({ id: users.id })
     .from(users)
@@ -36,11 +37,14 @@ export async function getSetupHealth() {
       ),
     );
 
-  const activeCapabilities = await pool.query<{ count: string }>(
-    `select count(*)::text as count
-     from kamdhenu.mobile_capabilities
-     where is_active = true`,
-  );
+  // Was a raw pool.query() with "kamdhenu" hardcoded, bypassing the
+  // tenant-scoped connection entirely (pool.query grabs a fresh
+  // connection with no search_path set). Rewritten as a normal query on
+  // the scoped `db` so it resolves against the right tenant automatically.
+  const [activeCapabilities] = await db
+    .select({ count: count() })
+    .from(mobileCapabilities)
+    .where(eq(mobileCapabilities.isActive, true));
 
   const [defaultAdmin] = await db
     .select({ value: workspaceSettings.value })
@@ -52,7 +56,7 @@ export async function getSetupHealth() {
 
   for (const employee of activeEmployees) {
     const capabilities =
-      await getResolvedCapabilitiesForUser(employee.id);
+      await getResolvedCapabilitiesForUser(db, employee.id);
 
     if (capabilities.length === 0) {
       employeesWithoutWork += 1;
@@ -74,7 +78,7 @@ export async function getSetupHealth() {
     );
 
   const capabilityCount = Number(
-    activeCapabilities.rows[0]?.count ?? 0,
+    activeCapabilities?.count ?? 0,
   );
 
   const checks = [
@@ -135,7 +139,7 @@ export async function getSetupHealth() {
   };
 }
 
-async function getFrequentActions(actorUserId: number | null) {
+async function getFrequentActions(db: AppDatabase, actorUserId: number | null) {
   const pins = actorUserId
     ? await db
         .select()
@@ -208,7 +212,7 @@ async function getFrequentActions(actorUserId: number | null) {
     }));
 }
 
-export async function getAdminHome(actorUserId: number | null) {
+export async function getAdminHome(db: AppDatabase, actorUserId: number | null) {
   const today = new Date().toISOString().slice(0, 10);
 
   const [
@@ -354,7 +358,7 @@ export async function getAdminHome(actorUserId: number | null) {
     },
 
     needsAttention,
-    frequentActions: await getFrequentActions(actorUserId),
-    setupHealth: await getSetupHealth(),
+    frequentActions: await getFrequentActions(db, actorUserId),
+    setupHealth: await getSetupHealth(db),
   };
 }

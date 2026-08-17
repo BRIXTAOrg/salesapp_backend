@@ -2,13 +2,15 @@ import type { Router } from "express";
 
 import { asc, count, eq } from "drizzle-orm";
 
-import { db } from "../db/db";
 import {
   mobileCapabilities,
   userMobileCapabilities,
 } from "../db/schema";
 import { capabilityAssignmentRules } from "../db/applianceSchema";
-import type { AdminRequest } from "../middleware/adminService";
+import {
+  withAdminTenantDb,
+  type AdminRequest,
+} from "../middleware/adminService";
 import { writeAudit } from "../services/audit";
 
 const SUPPORTED_TYPES = new Set([
@@ -32,7 +34,7 @@ function normalizeKey(input: unknown) {
 }
 
 export function registerResponsibilityAdminRoutes(router: Router) {
-  router.get("/capabilities", async (_req, res) => {
+  router.get("/capabilities", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     const capabilities = await db
       .select()
       .from(mobileCapabilities)
@@ -76,9 +78,9 @@ export function registerResponsibilityAdminRoutes(router: Router) {
         assignmentRules: ruleMap.get(capability.id) ?? 0,
       })),
     });
-  });
+  }));
 
-  router.post("/capabilities", async (req: AdminRequest, res) => {
+  router.post("/capabilities", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const {
       key,
       title,
@@ -121,7 +123,7 @@ export function registerResponsibilityAdminRoutes(router: Router) {
         })
         .returning();
 
-      await writeAudit({
+      await writeAudit(db, {
         actorUserId: req.adminActor?.userId,
         action: "responsibility.create",
         entityType: "responsibility",
@@ -141,9 +143,9 @@ export function registerResponsibilityAdminRoutes(router: Router) {
           "Unable to create responsibility.",
       });
     }
-  });
+  }));
 
-  router.patch("/capabilities/:id", async (req: AdminRequest, res) => {
+  router.patch("/capabilities/:id", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const capabilityId = Number(req.params.id);
 
     if (!Number.isInteger(capabilityId) || capabilityId <= 0) {
@@ -221,7 +223,7 @@ export function registerResponsibilityAdminRoutes(router: Router) {
       .where(eq(mobileCapabilities.id, capabilityId))
       .returning();
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "responsibility.update",
       entityType: "responsibility",
@@ -234,9 +236,9 @@ export function registerResponsibilityAdminRoutes(router: Router) {
       success: true,
       capability: updated,
     });
-  });
+  }));
 
-  router.get("/capability-rules", async (_req, res) => {
+  router.get("/capability-rules", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     return res.json({
       success: true,
       rules: await db
@@ -244,9 +246,9 @@ export function registerResponsibilityAdminRoutes(router: Router) {
         .from(capabilityAssignmentRules)
         .orderBy(asc(capabilityAssignmentRules.id)),
     });
-  });
+  }));
 
-  router.post("/capability-rules", async (req: AdminRequest, res) => {
+  router.post("/capability-rules", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const {
       capabilityId,
       subjectType,
@@ -291,7 +293,7 @@ export function registerResponsibilityAdminRoutes(router: Router) {
       })
       .returning();
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "responsibility.rule_create",
       entityType: "capability_assignment_rule",
@@ -303,11 +305,11 @@ export function registerResponsibilityAdminRoutes(router: Router) {
       success: true,
       rule: created,
     });
-  });
+  }));
 
   router.patch(
     "/capability-rules/:id",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const id = Number(req.params.id);
 
       if (!Number.isInteger(id) || id <= 0) {
@@ -353,7 +355,7 @@ export function registerResponsibilityAdminRoutes(router: Router) {
         .where(eq(capabilityAssignmentRules.id, id))
         .returning();
 
-      await writeAudit({
+      await writeAudit(db, {
         actorUserId: req.adminActor?.userId,
         action: "responsibility.rule_update",
         entityType: "capability_assignment_rule",
@@ -366,6 +368,6 @@ export function registerResponsibilityAdminRoutes(router: Router) {
         success: true,
         rule: updated,
       });
-    },
+    }),
   );
 }

@@ -1,12 +1,11 @@
 // src/getRoutes/attendance.ts
 import { Express, Response } from "express";
-import { db } from "../db/db";
 import { salesmanAttendance } from "../db/schema";
 import { eq, desc, and, sql } from "drizzle-orm";
-import { authenticateToken, AuthRequest } from "../middleware/auth";
+import { authenticateToken, withTenantDb, AuthRequest } from "../middleware/auth";
 
 export default function setupAttendanceRoutes(app: Express) {
-  app.get("/api/salesApp/attendance", authenticateToken, async (req: AuthRequest, res: Response) => {
+  app.get("/api/salesApp/attendance", authenticateToken, withTenantDb<AuthRequest>(async (req, res, db) => {
     try {
       const userId = req.user!.userId;
       
@@ -31,5 +30,5 @@ export default function setupAttendanceRoutes(app: Express) {
       console.error("Error fetching attendance:", err);
       return res.status(500).json({ success: false, error: "Internal server error" });
     }
-  });
+  }));
 }

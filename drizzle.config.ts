@@ -11,13 +11,14 @@ export default defineConfig({
   schema: [
     "./src/db/schema.ts",
     "./src/db/applianceSchema.ts",
+    "./src/db/publicSchema.ts",
   ],
   out: "./src/db/migrations",
   dialect: "postgresql",
   dbCredentials: {
     url: process.env.DATABASE_URL,
   },
-  schemaFilter: ["kamdhenu"],
+  //schemaFilter: [process.env.DB_SCHEMA ?? "public"],
   verbose: true,
   strict: true,
 });

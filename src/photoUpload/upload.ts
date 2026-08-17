@@ -3,6 +3,7 @@ import { Express, Request, Response } from "express";
 import { createClient } from "@supabase/supabase-js";
 import multer from "multer";
 import WebSocket from "ws"
+import { authenticateToken, AuthRequest } from "../middleware/auth";
 
 // --- Load Environment Variables ---
 const {
@@ -19,7 +20,12 @@ const upload = multer({
 });
 
 export default function setupUploadRoutes(app: Express) {
-  app.post("/api/supabase/photo-upload", upload.single('file'), async (req: Request, res: Response) => {
+  // NOTE: this route touches no tenant tables (pure Supabase Storage
+  // plumbing), so it deliberately does NOT use withTenantDb -- there's no
+  // db/search_path scoping needed here. It previously had no auth at all
+  // though, which meant any caller could upload to the bucket regardless
+  // of login state -- added authenticateToken to close that.
+  app.post("/api/supabase/photo-upload", authenticateToken, upload.single('file'), async (req: AuthRequest, res: Response) => {
     
     if (!req.file) {
       return res.status(400).json({ success: false, error: "No file was uploaded." });

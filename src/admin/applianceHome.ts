@@ -1,13 +1,16 @@
 import type { Router } from "express";
 
-import type { AdminRequest } from "../middleware/adminService";
+import {
+  withAdminTenantDb,
+  type AdminRequest,
+} from "../middleware/adminService";
 import {
   getAdminHome,
   getSetupHealth,
 } from "../services/adminHome";
 
 export function registerHomeAdminRoutes(router: Router) {
-  router.get("/home", async (req: AdminRequest, res) => {
+  router.get("/home", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     try {
       const queryActor = Number(req.query.actorUserId);
       const actorUserId =
@@ -18,7 +21,7 @@ export function registerHomeAdminRoutes(router: Router) {
 
       return res.json({
         success: true,
-        home: await getAdminHome(actorUserId),
+        home: await getAdminHome(db, actorUserId),
       });
     } catch (error) {
       console.error("Admin home error:", error);
@@ -27,13 +30,13 @@ export function registerHomeAdminRoutes(router: Router) {
         error: "Unable to build admin home.",
       });
     }
-  });
+  }));
 
-  router.get("/setup-health", async (_req, res) => {
+  router.get("/setup-health", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     try {
       return res.json({
         success: true,
-        health: await getSetupHealth(),
+        health: await getSetupHealth(db),
       });
     } catch (error) {
       console.error("Setup health error:", error);
@@ -42,5 +45,5 @@ export function registerHomeAdminRoutes(router: Router) {
         error: "Unable to calculate setup health.",
       });
     }
-  });
+  }));
 }

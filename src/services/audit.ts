@@ -1,16 +1,19 @@
-import { db } from "../db/db";
+import type { AppDatabase } from "../db/db";
 import { applianceAuditLog } from "../db/applianceSchema";
 
-export async function writeAudit(input: {
-  actorUserId?: number | null;
-  actorType?: string;
-  action: string;
-  entityType: string;
-  entityId?: string | number | null;
-  beforeState?: unknown;
-  afterState?: unknown;
-  metadata?: Record<string, unknown>;
-}) {
+export async function writeAudit(
+  db: AppDatabase,
+  input: {
+    actorUserId?: number | null;
+    actorType?: string;
+    action: string;
+    entityType: string;
+    entityId?: string | number | null;
+    beforeState?: unknown;
+    afterState?: unknown;
+    metadata?: Record<string, unknown>;
+  },
+) {
   try {
     await db.insert(applianceAuditLog).values({
       actorUserId: input.actorUserId ?? null,

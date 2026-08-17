@@ -1,12 +1,11 @@
 // src/updateRoutes/dealer.ts
 import { Express, Response } from "express";
-import { db } from "../db/db";
 import { dealers } from "../db/schema";
 import { eq, and } from "drizzle-orm";
-import { authenticateToken, AuthRequest } from "../middleware/auth";
+import { authenticateToken, withTenantDb, AuthRequest } from "../middleware/auth";
 
 export default function setupDealerUpdateRoutes(app: Express) {
-    const updateHandler = async (req: AuthRequest, res: Response) => {
+    const updateHandler = withTenantDb<AuthRequest>(async (req, res, db) => {
         try {
             const { id } = req.params;
             const userId = req.user!.userId; // <-- Get user ID
@@ -42,7 +41,7 @@ export default function setupDealerUpdateRoutes(app: Express) {
             }
             return res.status(500).json({ success: false, error: "Internal server error" });
         }
-    };
+    });
 
     app.put("/api/salesApp/dealers/:id", authenticateToken, updateHandler);
     app.patch("/api/salesApp/dealers/:id", authenticateToken, updateHandler);

@@ -1,13 +1,12 @@
 // src/getRoutes/dealer.ts
 import { Express, Response } from "express";
-import { db } from "../db/db";
 import { dealers } from "../db/schema";
 import { eq, and, or, desc, asc, ilike, sql, SQL } from "drizzle-orm";
-import { authenticateToken, AuthRequest } from "../middleware/auth";
+import { authenticateToken, withTenantDb, AuthRequest } from "../middleware/auth";
 
 export default function setupDealerRoutes(app: Express) {
   
-  app.get("/api/salesApp/dealers", authenticateToken, async (req: AuthRequest, res: Response) => {
+  app.get("/api/salesApp/dealers", authenticateToken, withTenantDb<AuthRequest>(async (req, res, db) => {
     try {
       const { search, limit = '50', page = '1', zone, area, sortBy, sortDir } = req.query;
 
@@ -85,10 +84,10 @@ export default function setupDealerRoutes(app: Express) {
         details: err instanceof Error ? err.message : 'Unknown error'
       });
     }
-  });
+  }));
 
   // Optional: Get Single Dealer by ID
-  app.get("/api/salesApp/dealers/:id", authenticateToken, async (req: AuthRequest, res: Response) => {
+  app.get("/api/salesApp/dealers/:id", authenticateToken, withTenantDb<AuthRequest>(async (req, res, db) => {
     try {
       const { id } = req.params;
       const [record] = await db.select().from(dealers).where(eq(dealers.id, Number(id))).limit(1);
@@ -102,5 +101,5 @@ export default function setupDealerRoutes(app: Express) {
       console.error("Error fetching single dealer:", err);
       return res.status(500).json({ success: false, error: "Internal server error" });
     }
-  });
+  }));
 }

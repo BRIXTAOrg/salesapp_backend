@@ -10,7 +10,6 @@ import {
   sql,
 } from "drizzle-orm";
 
-import { db } from "../db/db";
 import {
   approvalRequests,
   deviceRegistrations,
@@ -22,6 +21,7 @@ import {
 } from "../db/applianceSchema";
 import {
   authenticateToken,
+  withTenantDb,
   type AuthRequest,
 } from "../middleware/auth";
 import { getResolvedCapabilitiesForUser } from "../services/capabilityResolver";
@@ -35,7 +35,7 @@ export default function setupMobileApplianceRoutes(app: Express) {
   app.post(
     "/api/salesApp/device/register",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
 
       if (!userId) {
@@ -110,13 +110,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         device,
       });
-    },
+    }),
   );
 
   app.post(
     "/api/salesApp/device/heartbeat",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
 
       if (!userId) {
@@ -182,13 +182,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         serverTime: now.toISOString(),
       });
-    },
+    }),
   );
 
   app.get(
     "/api/salesApp/work-items",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
 
       if (!userId) {
@@ -208,13 +208,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         workItems: rows,
       });
-    },
+    }),
   );
 
   app.patch(
     "/api/salesApp/work-items/:id/status",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
       const id = String(req.params.id);
       const status = String(req.body?.status ?? "");
@@ -269,7 +269,7 @@ export default function setupMobileApplianceRoutes(app: Express) {
           updated.approvalAreaKey ??
           "work_item_approval";
 
-        const owner = await resolveAdminOwner({ areaKey });
+        const owner = await resolveAdminOwner(db, { areaKey });
 
         await db.insert(approvalRequests).values({
           sourceType: "work_item",
@@ -289,13 +289,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         workItem: updated,
       });
-    },
+    }),
   );
 
   app.post(
     "/api/salesApp/submissions",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
       const capabilityId = Number(req.body?.capabilityId);
       const clientMutationId =
@@ -314,7 +314,7 @@ export default function setupMobileApplianceRoutes(app: Express) {
       }
 
       const resolved =
-        await getResolvedCapabilitiesForUser(userId);
+        await getResolvedCapabilitiesForUser(db, userId);
 
       if (
         !resolved.some(
@@ -396,13 +396,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         submission,
       });
-    },
+    }),
   );
 
   app.get(
     "/api/salesApp/submissions",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
 
       if (!userId) {
@@ -423,13 +423,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         submissions: rows,
       });
-    },
+    }),
   );
 
   app.post(
     "/api/salesApp/usage",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
       const actionKey =
         String(req.body?.actionKey ?? "").trim();
@@ -460,13 +460,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
       return res.status(201).json({
         success: true,
       });
-    },
+    }),
   );
 
   app.get(
     "/api/salesApp/pins",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
 
       if (!userId) {
@@ -491,13 +491,13 @@ export default function setupMobileApplianceRoutes(app: Express) {
         success: true,
         pins,
       });
-    },
+    }),
   );
 
   app.put(
     "/api/salesApp/pins",
     authenticateToken,
-    async (req: AuthRequest, res: Response) => {
+    withTenantDb<AuthRequest>(async (req, res, db) => {
       const userId = userIdFrom(req);
 
       if (!userId) {
@@ -511,30 +511,33 @@ export default function setupMobileApplianceRoutes(app: Express) {
         ? req.body.itemKeys.map(String).filter(Boolean)
         : [];
 
-      await db.transaction(async (tx) => {
-        await tx
-          .delete(userPins)
-          .where(
-            and(
-              eq(userPins.userId, userId),
-              eq(userPins.surface, "mobile_home"),
-            ),
-          );
+      // No nested db.transaction() here: `db` is already running inside
+      // the transaction withTenantSchema opened to hold search_path, so
+      // this delete+insert is already atomic within it. A second
+      // .transaction() would issue a redundant BEGIN on an already-open
+      // transaction and its COMMIT would end the outer one early.
+      await db
+        .delete(userPins)
+        .where(
+          and(
+            eq(userPins.userId, userId),
+            eq(userPins.surface, "mobile_home"),
+          ),
+        );
 
-        if (itemKeys.length) {
-          await tx.insert(userPins).values(
-            itemKeys.map((itemKey: string, index: number) => ({
-              userId,
-              surface: "mobile_home",
-              itemKey,
-              sortOrder: index,
-            })),
-          );
-        }
-      });
+      if (itemKeys.length) {
+        await db.insert(userPins).values(
+          itemKeys.map((itemKey: string, index: number) => ({
+            userId,
+            surface: "mobile_home",
+            itemKey,
+            sortOrder: index,
+          })),
+        );
+      }
 
       return res.json({ success: true });
-    },
+    }),
   );
 
 }

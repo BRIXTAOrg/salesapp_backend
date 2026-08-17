@@ -3,12 +3,13 @@ import {
 	pgSchema, uniqueIndex, foreignKey, varchar, text, numeric, timestamp,
 	index, integer, date, uuid, boolean, unique, serial, jsonb, doublePrecision,
 	bigserial, check, bigint, primaryKey,
+	pgTable,
 } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
-export const myCustomSchema = pgSchema("kamdhenu");
+//export const myCustomSchema = pgSchema(process.env.DB_SCHEMA ?? "public");
 
-export const users = myCustomSchema.table("users", {
+export const users = pgTable("users", {
 	id: serial().primaryKey().notNull(),
 	email: text().notNull(),
 	username: text("username"),
@@ -47,7 +48,7 @@ export const users = myCustomSchema.table("users", {
 	index("idx_users_reports_to_id").on(table.reportsToId),
 ]);
 
-export const roles = myCustomSchema.table("roles", {
+export const roles = pgTable("roles", {
 	id: serial("id").primaryKey(),
 	orgRole: varchar("org_role", { length: 100 }), // e.g., 'President', 'General Manager', 'Executive'
 	jobRole: varchar("job_role", { length: 100 }), // e.g., 'Sales', 'Technical Sales', 'IT', 'MIS'
@@ -57,7 +58,7 @@ export const roles = myCustomSchema.table("roles", {
 	updatedAt: timestamp("updated_at").defaultNow(),
 });
 
-export const userRoles = myCustomSchema.table("user_roles", {
+export const userRoles = pgTable("user_roles", {
 	userId: integer("user_id").notNull(),
 	roleId: integer("role_id").notNull(),
 }, (t) => [
@@ -75,7 +76,7 @@ export const userRoles = myCustomSchema.table("user_roles", {
 	}).onDelete("cascade"),
 ]);
 
-export const dealers = myCustomSchema.table("dealers", {
+export const dealers = pgTable("dealers", {
 	id: serial("id").primaryKey(),
 	userId: integer("user_id").notNull(),
 	dealerPartyName: varchar("dealer_party_name", { length: 255 }).notNull(),
@@ -107,73 +108,37 @@ export const dealers = myCustomSchema.table("dealers", {
 	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
-export const mobileCapabilities = myCustomSchema.table(
-	"mobile_capabilities",
-	{
-		id: serial("id").primaryKey(),
-
-		key: varchar("key", { length: 120 }).notNull(),
-
-		title: varchar("title", { length: 160 }).notNull(),
-
-		type: varchar("type", { length: 50 }).notNull(),
-
-		description: text("description"),
-
-		icon: varchar("icon", { length: 80 }),
-
-		config: jsonb("config")
-			.$type<Record<string, unknown>>()
-			.notNull()
-			.default(sql`'{}'::jsonb`),
-
-		isActive: boolean("is_active")
-			.notNull()
-			.default(true),
-
-		createdAt: timestamp("created_at", {
-			withTimezone: true,
-		})
-			.notNull()
-			.defaultNow(),
-
-		updatedAt: timestamp("updated_at", {
-			withTimezone: true,
-		})
-			.notNull()
-			.defaultNow(),
-	},
+export const mobileCapabilities = pgTable("mobile_capabilities", {
+	id: serial("id").primaryKey(),
+	key: varchar("key", { length: 120 }).notNull(),
+	title: varchar("title", { length: 160 }).notNull(),
+	type: varchar("type", { length: 50 }).notNull(),
+	description: text("description"),
+	icon: varchar("icon", { length: 80 }),
+	config: jsonb("config").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+	isActive: boolean("is_active").notNull().default(true),
+	createdAt: timestamp("created_at", { withTimezone: true, }).notNull().defaultNow(),
+	updatedAt: timestamp("updated_at", { withTimezone: true, }).notNull().defaultNow(),
+},
 	(table) => [
-		uniqueIndex("mobile_capabilities_key_key")
-			.on(table.key),
+		uniqueIndex("mobile_capabilities_key_key").on(table.key),
 	],
 );
 
-export const userMobileCapabilities = myCustomSchema.table(
-	"user_mobile_capabilities",
-	{
-		userId: integer("user_id").notNull(),
-
-		capabilityId: integer("capability_id").notNull(),
-
-		sortOrder: integer("sort_order")
-			.notNull()
-			.default(0),
-	},
+export const userMobileCapabilities = pgTable("user_mobile_capabilities", {
+	userId: integer("user_id").notNull(),
+	capabilityId: integer("capability_id").notNull(),
+	sortOrder: integer("sort_order").notNull().default(0),
+},
 	(table) => [
 		primaryKey({
-			columns: [
-				table.userId,
-				table.capabilityId,
-			],
+			columns: [table.userId, table.capabilityId,],
 		}),
-
 		foreignKey({
 			columns: [table.userId],
 			foreignColumns: [users.id],
 			name: "user_mobile_capabilities_user_id_fkey",
 		}).onDelete("cascade"),
-
 		foreignKey({
 			columns: [table.capabilityId],
 			foreignColumns: [mobileCapabilities.id],
@@ -182,7 +147,7 @@ export const userMobileCapabilities = myCustomSchema.table(
 	],
 );
 
-export const distributors = myCustomSchema.table("distributors", {
+export const distributors = pgTable("distributors", {
 	id: serial("id").primaryKey(),
 	userId: integer("user_id"),
 	name: varchar("name", { length: 255 }).notNull(),
@@ -210,7 +175,7 @@ export const distributors = myCustomSchema.table("distributors", {
 	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
-export const outlets = myCustomSchema.table("outlets", {
+export const outlets = pgTable("outlets", {
 	id: serial("id").primaryKey(),
 	distributorId: integer("distributor_id"),
 	userId: integer("user_id"),
@@ -244,7 +209,7 @@ export const outlets = myCustomSchema.table("outlets", {
 	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
-export const institutions = myCustomSchema.table("instititions", {
+export const institutions = pgTable("instititions", {
 	id: serial("id").primaryKey(),
 	userId: integer("user_id").notNull(),
 	institutionName: varchar("institution_name", { length: 255 }).notNull(),
@@ -276,7 +241,7 @@ export const institutions = myCustomSchema.table("instititions", {
 	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
-export const influencers = myCustomSchema.table("influencers", {
+export const influencers = pgTable("influencers", {
 	id: serial("id").primaryKey(),
 	userId: integer("user_id").notNull(),
 	contactPersonName: varchar("contact_person_name", { length: 255 }),
@@ -304,7 +269,7 @@ export const influencers = myCustomSchema.table("influencers", {
 	}).onDelete("restrict").onUpdate("cascade"),
 ]);
 
-export const permanentJourneyPlans = myCustomSchema.table("permanent_journey_plans", {
+export const permanentJourneyPlans = pgTable("permanent_journey_plans", {
 	id: varchar({ length: 255 }).primaryKey().notNull(),
 	userId: integer("user_id").notNull(),
 	createdById: integer("created_by_id").notNull(),
@@ -362,7 +327,7 @@ export const permanentJourneyPlans = myCustomSchema.table("permanent_journey_pla
 	}).onUpdate("cascade").onDelete("set null"),
 ]);
 
-export const dailyVisitReports = myCustomSchema.table("daily_visit_reports", {
+export const dailyVisitReports = pgTable("daily_visit_reports", {
 	id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
 	reportDate: date("report_date"),
 	customerType: varchar("customer_type", { length: 50 }), //dealer or institution or influencer
@@ -416,7 +381,7 @@ export const dailyVisitReports = myCustomSchema.table("daily_visit_reports", {
 	}).onDelete("set null"),
 ]);
 
-export const salesmanLeaveApplications = myCustomSchema.table("salesman_leave_applications", {
+export const salesmanLeaveApplications = pgTable("salesman_leave_applications", {
 	id: varchar({ length: 255 }).primaryKey().notNull(),
 	userId: integer("user_id").notNull(),
 	leaveType: varchar("leave_type", { length: 100 }).notNull(),
@@ -437,7 +402,7 @@ export const salesmanLeaveApplications = myCustomSchema.table("salesman_leave_ap
 	}).onUpdate("cascade").onDelete("cascade"),
 ]);
 
-export const salesmanAttendance = myCustomSchema.table("salesman_attendance", {
+export const salesmanAttendance = pgTable("salesman_attendance", {
 	id: varchar({ length: 255 }).primaryKey().notNull(),
 	userId: integer("user_id").notNull(),
 	attendanceDate: date("attendance_date").notNull(),
@@ -467,7 +432,7 @@ export const salesmanAttendance = myCustomSchema.table("salesman_attendance", {
 ]);
 
 // ------ Geotracking ------
-export const geoTracking = myCustomSchema.table("geo_tracking", {
+export const geoTracking = pgTable("geo_tracking", {
 	id: text().primaryKey().notNull(),
 	userId: integer("user_id").notNull(),
 	latitude: numeric({ precision: 10, scale: 7 }).notNull(),
@@ -510,7 +475,7 @@ export const geoTracking = myCustomSchema.table("geo_tracking", {
 	}).onDelete("set null"),
 ]);
 
-export const journeys = myCustomSchema.table("journeys", {
+export const journeys = pgTable("journeys", {
 	id: varchar({ length: 255 }).primaryKey().notNull(),
 	userId: integer("user_id").notNull(),
 	pjpId: varchar("pjp_id", { length: 255 }),
@@ -546,7 +511,7 @@ export const journeys = myCustomSchema.table("journeys", {
 	}).onDelete("set null"),
 ]);
 
-export const journeyOps = myCustomSchema.table("journey_ops", {
+export const journeyOps = pgTable("journey_ops", {
 	serverSeq: bigserial("server_seq", { mode: "bigint" }).primaryKey().notNull(),
 	opId: uuid("op_id").notNull(),
 	journeyId: varchar("journey_id", { length: 255 }).notNull(),
@@ -573,7 +538,7 @@ export const journeyOps = myCustomSchema.table("journey_ops", {
 	}).onDelete("cascade"),
 ]);
 
-export const journeyBreadcrumbs = myCustomSchema.table("journey_breadcrumbs", {
+export const journeyBreadcrumbs = pgTable("journey_breadcrumbs", {
 	id: varchar({ length: 255 }).primaryKey().notNull(),
 	journeyId: varchar("journey_id", { length: 255 }).notNull(),
 	latitude: doublePrecision().notNull(),
@@ -593,7 +558,7 @@ export const journeyBreadcrumbs = myCustomSchema.table("journey_breadcrumbs", {
 	}).onDelete("cascade"),
 ]);
 
-export const syncState = myCustomSchema.table("sync_state", {
+export const syncState = pgTable("sync_state", {
 	id: integer().default(1).primaryKey().notNull(),
 	lastServerSeq: bigint("last_server_seq", { mode: "number" }).default(0).notNull(),
 }, (table) => [
@@ -601,7 +566,7 @@ export const syncState = myCustomSchema.table("sync_state", {
 ]);
 
 // ---- TA DA ----
-export const tadaBills = myCustomSchema.table("ta_da_bills", {
+export const tadaBills = pgTable("ta_da_bills", {
 	id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
 	userId: integer("user_id").notNull(),
 	fromDate: date("from_date"),
@@ -622,7 +587,7 @@ export const tadaBills = myCustomSchema.table("ta_da_bills", {
 	}).onDelete("cascade"),
 ]);
 
-export const tadaBillItems = myCustomSchema.table("ta_da_bill_items", {
+export const tadaBillItems = pgTable("ta_da_bill_items", {
 	id: varchar("id", { length: 255 }).primaryKey().default(sql`gen_random_uuid()`),
 	billId: varchar("bill_id", { length: 255 }).notNull(),
 

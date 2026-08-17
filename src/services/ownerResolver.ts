@@ -1,6 +1,6 @@
 import { and, asc, eq } from "drizzle-orm";
 
-import { db } from "../db/db";
+import type { AppDatabase } from "../db/db";
 import { users } from "../db/schema";
 import {
   adminOwnershipRules,
@@ -18,7 +18,7 @@ export type OwnerResolution = {
   ruleId?: number;
 };
 
-async function isUsableAdmin(userId: number | null) {
+async function isUsableAdmin(db: AppDatabase, userId: number | null) {
   if (!userId) return false;
 
   const [user] = await db
@@ -38,7 +38,7 @@ async function isUsableAdmin(userId: number | null) {
   );
 }
 
-async function getDefaultAdminId() {
+async function getDefaultAdminId(db: AppDatabase) {
   const [row] = await db
     .select({ value: workspaceSettings.value })
     .from(workspaceSettings)
@@ -64,11 +64,14 @@ async function getDefaultAdminId() {
   return null;
 }
 
-export async function resolveAdminOwner(input: {
-  areaKey: string;
-  scopeType?: string;
-  scopeValue?: string | null;
-}): Promise<OwnerResolution> {
+export async function resolveAdminOwner(
+  db: AppDatabase,
+  input: {
+    areaKey: string;
+    scopeType?: string;
+    scopeValue?: string | null;
+  },
+): Promise<OwnerResolution> {
   const scopeType = input.scopeType ?? "organization";
 
   const rules = await db
@@ -106,7 +109,7 @@ export async function resolveAdminOwner(input: {
     });
 
   for (const rule of matching) {
-    if (await isUsableAdmin(rule.primaryAdminUserId)) {
+    if (await isUsableAdmin(db, rule.primaryAdminUserId)) {
       return {
         userId: rule.primaryAdminUserId,
         source: "primary",
@@ -114,7 +117,7 @@ export async function resolveAdminOwner(input: {
       };
     }
 
-    if (await isUsableAdmin(rule.fallbackAdminUserId)) {
+    if (await isUsableAdmin(db, rule.fallbackAdminUserId)) {
       return {
         userId: rule.fallbackAdminUserId,
         source: "fallback",
@@ -123,9 +126,9 @@ export async function resolveAdminOwner(input: {
     }
   }
 
-  const defaultAdminId = await getDefaultAdminId();
+  const defaultAdminId = await getDefaultAdminId(db);
 
-  if (await isUsableAdmin(defaultAdminId)) {
+  if (await isUsableAdmin(db, defaultAdminId)) {
     return {
       userId: defaultAdminId,
       source: "default_admin",

@@ -1,11 +1,10 @@
 // src/postRoutes/dealer.ts
 import { Express, Response } from "express";
-import { db } from "../db/db";
 import { dealers } from "../db/schema";
-import { authenticateToken, AuthRequest } from "../middleware/auth";
+import { authenticateToken, withTenantDb, AuthRequest } from "../middleware/auth";
 
 export default function setupDealerPostRoutes(app: Express) {
-  app.post("/api/salesApp/dealers", authenticateToken, async (req: AuthRequest, res: Response) => {
+  app.post("/api/salesApp/dealers", authenticateToken, withTenantDb<AuthRequest>(async (req, res, db) => {
     try {
       const userId = req.user!.userId; // <-- Get user ID from token
 
@@ -31,5 +30,5 @@ export default function setupDealerPostRoutes(app: Express) {
       }
       return res.status(500).json({ success: false, error: "Internal server error" });
     }
-  });
+  }));
 }

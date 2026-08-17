@@ -10,7 +10,7 @@ import {
   sql,
 } from "drizzle-orm";
 
-import { db } from "../db/db";
+import type { AppDatabase } from "../db/db";
 import { users } from "../db/schema";
 import {
   employeeRuntimeState,
@@ -19,12 +19,13 @@ import {
 } from "../db/applianceSchema";
 import {
   authenticateToken,
+  withTenantDb,
   type AuthRequest,
 } from "../middleware/auth";
 import { getResolvedCapabilitiesForUser } from "../services/capabilityResolver";
 import { rankMobileCapabilities } from "../services/mobileHomeRanking";
 
-async function getWorkspaceConfig() {
+async function getWorkspaceConfig(db: AppDatabase) {
   const rows = await db
     .select()
     .from(workspaceSettings);
@@ -58,153 +59,139 @@ export default function setupMobileBootstrapRoutes(
   app.get(
     "/api/salesApp/bootstrap",
     authenticateToken,
-    async (
-      req: AuthRequest,
-      res: Response,
-    ) => {
-      try {
-        const userId =
-          req.user?.userId;
+    withTenantDb<AuthRequest>(async (req, res, db) => {
+      const userId = req.user?.userId;
 
-        if (!userId) {
-          return res.status(401).json({
-            success: false,
-            error: "Unauthenticated.",
-          });
-        }
+      if (!userId) {
+        return res.status(401).json({
+          success: false,
+          error: "Unauthenticated.",
+        });
+      }
 
-        const [user] = await db
+      // Note: this query is now scoped implicitly -- db here is bound to
+      // this request's schema via withTenantDb, so `users` resolves to
+      // this tenant's users table with no explicit schema/company filter
+      // needed anywhere in the query itself.
+      const [user] = await db
+        .select()
+        .from(users)
+        .where(eq(users.id, userId))
+        .limit(1);
+
+      if (
+        !user ||
+        !user.isSalesAppUser ||
+        user.status !== "active"
+      ) {
+        return res.status(403).json({
+          success: false,
+          error:
+            "Mobile access is disabled for this employee.",
+        });
+      }
+
+      const [
+        resolvedCapabilities,
+        assignedWork,
+        config,
+      ] = await Promise.all([
+        getResolvedCapabilitiesForUser(db, userId),
+
+        db
           .select()
-          .from(users)
-          .where(eq(users.id, userId))
-          .limit(1);
-
-        if (
-          !user ||
-          !user.isSalesAppUser ||
-          user.status !== "active"
-        ) {
-          return res.status(403).json({
-            success: false,
-            error:
-              "Mobile access is disabled for this employee.",
-          });
-        }
-
-        const [
-          resolvedCapabilities,
-          assignedWork,
-          config,
-        ] = await Promise.all([
-          getResolvedCapabilitiesForUser(
-            userId,
-          ),
-
-          db
-            .select()
-            .from(workItems)
-            .where(
-              and(
-                eq(
-                  workItems.assigneeUserId,
-                  userId,
-                ),
-                sql`${workItems.status} in ('assigned', 'in_progress')`,
+          .from(workItems)
+          .where(
+            and(
+              eq(
+                workItems.assigneeUserId,
+                userId,
               ),
-            )
-            .orderBy(
-              asc(workItems.dueAt),
-              asc(workItems.createdAt),
-            )
-            .limit(100),
+              sql`${workItems.status} in ('assigned', 'in_progress')`,
+            ),
+          )
+          .orderBy(
+            asc(workItems.dueAt),
+            asc(workItems.createdAt),
+          )
+          .limit(100),
 
-          getWorkspaceConfig(),
-        ]);
+        getWorkspaceConfig(db),
+      ]);
 
-        const now = new Date();
+      const now = new Date();
 
-        await db
-          .insert(employeeRuntimeState)
-          .values({
-            userId,
+      await db
+        .insert(employeeRuntimeState)
+        .values({
+          userId,
+          lastBootstrapAt: now,
+          lastSeenAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target:
+            employeeRuntimeState.userId,
+          set: {
             lastBootstrapAt: now,
             lastSeenAt: now,
             updatedAt: now,
-          })
-          .onConflictDoUpdate({
-            target:
-              employeeRuntimeState.userId,
-            set: {
-              lastBootstrapAt: now,
-              lastSeenAt: now,
-              updatedAt: now,
-            },
-          });
-
-        const rankedCapabilities =
-          await rankMobileCapabilities(
-            userId,
-            resolvedCapabilities,
-          );
-
-        const modules =
-          rankedCapabilities.map(
-            ({
-              sortOrder: _sortOrder,
-              ...capability
-            }) => capability,
-          );
-
-        return res.status(200).json({
-          success: true,
-
-          user: {
-            id: user.id,
-            employeeCode:
-              user.salesmanLoginId,
-            name:
-              user.displayName ??
-              user.username ??
-              user.salesmanLoginId,
-            department:
-              user.department,
-            designation:
-              user.designation,
-            role: user.role,
-            area: user.area,
-            zone: user.zone,
-            reportsToId:
-              user.reportsToId,
           },
-
-          permissions:
-            rankedCapabilities.map(
-              (capability) =>
-                `capability.${capability.key}.use`,
-            ),
-
-          modules,
-
-          workItems:
-            assignedWork,
-
-          config,
-
-          generatedAt:
-            now.toISOString(),
         });
-      } catch (error) {
-        console.error(
-          "Mobile bootstrap route error:",
-          error,
+
+      const rankedCapabilities =
+        await rankMobileCapabilities(
+          db,
+          userId,
+          resolvedCapabilities,
         );
 
-        return res.status(500).json({
-          success: false,
-          error:
-            "Unable to load employee workspace.",
-        });
-      }
-    },
+      const modules =
+        rankedCapabilities.map(
+          ({
+            sortOrder: _sortOrder,
+            ...capability
+          }) => capability,
+        );
+
+      return res.status(200).json({
+        success: true,
+
+        user: {
+          id: user.id,
+          employeeCode:
+            user.salesmanLoginId,
+          name:
+            user.displayName ??
+            user.username ??
+            user.salesmanLoginId,
+          department:
+            user.department,
+          designation:
+            user.designation,
+          role: user.role,
+          area: user.area,
+          zone: user.zone,
+          reportsToId:
+            user.reportsToId,
+        },
+
+        permissions:
+          rankedCapabilities.map(
+            (capability) =>
+              `capability.${capability.key}.use`,
+          ),
+
+        modules,
+
+        workItems:
+          assignedWork,
+
+        config,
+
+        generatedAt:
+          now.toISOString(),
+      });
+    }),
   );
 }

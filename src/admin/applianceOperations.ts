@@ -8,7 +8,6 @@ import {
   type SQL,
 } from "drizzle-orm";
 
-import { db } from "../db/db";
 import { users } from "../db/schema";
 import {
   adminOwnershipRules,
@@ -20,12 +19,15 @@ import {
   workspaceSettings,
   workItems,
 } from "../db/applianceSchema";
-import type { AdminRequest } from "../middleware/adminService";
+import {
+  withAdminTenantDb,
+  type AdminRequest,
+} from "../middleware/adminService";
 import { resolveAdminOwner } from "../services/ownerResolver";
 import { writeAudit } from "../services/audit";
 
 export function registerOperationsAdminRoutes(router: Router) {
-  router.get("/work-items", async (req, res) => {
+  router.get("/work-items", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const assigneeUserId = Number(req.query.assigneeUserId);
     const status =
       typeof req.query.status === "string"
@@ -59,9 +61,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       workItems: rows,
     });
-  });
+  }));
 
-  router.post("/work-items", async (req: AdminRequest, res) => {
+  router.post("/work-items", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const {
       capabilityId,
       assigneeUserId,
@@ -125,7 +127,7 @@ export function registerOperationsAdminRoutes(router: Router) {
       })
       .returning();
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "work_item.create",
       entityType: "work_item",
@@ -137,9 +139,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       workItem: created,
     });
-  });
+  }));
 
-  router.patch("/work-items/:id", async (req: AdminRequest, res) => {
+  router.patch("/work-items/:id", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const id = String(req.params.id);
 
     const [before] = await db
@@ -189,7 +191,7 @@ export function registerOperationsAdminRoutes(router: Router) {
       .where(eq(workItems.id, id))
       .returning();
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "work_item.update",
       entityType: "work_item",
@@ -202,9 +204,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       workItem: updated,
     });
-  });
+  }));
 
-  router.get("/approvals", async (req, res) => {
+  router.get("/approvals", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const status =
       typeof req.query.status === "string"
         ? req.query.status
@@ -225,9 +227,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       approvals: rows,
     });
-  });
+  }));
 
-  router.post("/approvals", async (req: AdminRequest, res) => {
+  router.post("/approvals", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const {
       sourceType,
       sourceId,
@@ -252,7 +254,7 @@ export function registerOperationsAdminRoutes(router: Router) {
       });
     }
 
-    const owner = await resolveAdminOwner({
+    const owner = await resolveAdminOwner(db, {
       areaKey: String(areaKey),
       scopeType: String(scopeType ?? "organization"),
       scopeValue:
@@ -292,11 +294,11 @@ export function registerOperationsAdminRoutes(router: Router) {
       approval: created,
       owner,
     });
-  });
+  }));
 
   router.patch(
     "/approvals/:id/decision",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const id = String(req.params.id);
       const decision = String(req.body?.decision ?? "");
 
@@ -327,7 +329,7 @@ export function registerOperationsAdminRoutes(router: Router) {
         });
       }
 
-      await writeAudit({
+      await writeAudit(db, {
         actorUserId: req.adminActor?.userId,
         action: `approval.${decision}`,
         entityType: "approval",
@@ -339,10 +341,10 @@ export function registerOperationsAdminRoutes(router: Router) {
         success: true,
         approval: updated,
       });
-    },
+    }),
   );
 
-  router.get("/devices", async (_req, res) => {
+  router.get("/devices", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     const rows = await db
       .select()
       .from(deviceRegistrations)
@@ -352,9 +354,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       devices: rows,
     });
-  });
+  }));
 
-  router.post("/devices/:id/revoke", async (req: AdminRequest, res) => {
+  router.post("/devices/:id/revoke", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const id = String(req.params.id);
 
     const [updated] = await db
@@ -373,7 +375,7 @@ export function registerOperationsAdminRoutes(router: Router) {
       });
     }
 
-    await writeAudit({
+    await writeAudit(db, {
       actorUserId: req.adminActor?.userId,
       action: "device.revoke",
       entityType: "device",
@@ -384,9 +386,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       device: updated,
     });
-  });
+  }));
 
-  router.get("/ownership-rules", async (_req, res) => {
+  router.get("/ownership-rules", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     return res.json({
       success: true,
       rules: await db
@@ -394,11 +396,11 @@ export function registerOperationsAdminRoutes(router: Router) {
         .from(adminOwnershipRules)
         .orderBy(asc(adminOwnershipRules.id)),
     });
-  });
+  }));
 
   router.post(
     "/ownership-rules",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const {
         areaKey,
         scopeType = "organization",
@@ -453,12 +455,12 @@ export function registerOperationsAdminRoutes(router: Router) {
         success: true,
         rule: created,
       });
-    },
+    }),
   );
 
   router.patch(
     "/ownership-rules/:id",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const id = Number(req.params.id);
 
       if (!Number.isInteger(id) || id <= 0) {
@@ -507,10 +509,10 @@ export function registerOperationsAdminRoutes(router: Router) {
         success: true,
         rule: updated,
       });
-    },
+    }),
   );
 
-  router.get("/settings", async (_req, res) => {
+  router.get("/settings", withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
     return res.json({
       success: true,
       settings: await db
@@ -518,9 +520,9 @@ export function registerOperationsAdminRoutes(router: Router) {
         .from(workspaceSettings)
         .orderBy(asc(workspaceSettings.key)),
     });
-  });
+  }));
 
-  router.put("/settings/:key", async (req: AdminRequest, res) => {
+  router.put("/settings/:key", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const key = String(req.params.key);
 
     if (!("value" in (req.body ?? {}))) {
@@ -552,9 +554,9 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       setting: updated,
     });
-  });
+  }));
 
-  router.get("/attention", async (req, res) => {
+  router.get("/attention", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const status =
       typeof req.query.status === "string"
         ? req.query.status
@@ -574,11 +576,11 @@ export function registerOperationsAdminRoutes(router: Router) {
       success: true,
       items: rows,
     });
-  });
+  }));
 
   router.patch(
     "/attention/:id/resolve",
-    async (req: AdminRequest, res) => {
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
       const id = String(req.params.id);
 
       const [updated] = await db
@@ -602,10 +604,10 @@ export function registerOperationsAdminRoutes(router: Router) {
         success: true,
         item: updated,
       });
-    },
+    }),
   );
 
-  router.post("/usage", async (req: AdminRequest, res) => {
+  router.post("/usage", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const actionKey = String(req.body?.actionKey ?? "").trim();
 
     if (!actionKey) {
@@ -638,9 +640,9 @@ export function registerOperationsAdminRoutes(router: Router) {
     });
 
     return res.status(201).json({ success: true });
-  });
+  }));
 
-  router.get("/pins", async (req: AdminRequest, res) => {
+  router.get("/pins", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const queryActor = Number(req.query.actorUserId);
     const actorUserId =
       req.adminActor?.userId ??
@@ -666,9 +668,9 @@ export function registerOperationsAdminRoutes(router: Router) {
         )
         .orderBy(userPins.sortOrder),
     });
-  });
+  }));
 
-  router.put("/pins", async (req: AdminRequest, res) => {
+  router.put("/pins", withAdminTenantDb<AdminRequest>(async (req, res, db) => {
     const bodyActor = Number(req.body?.actorUserId);
     const actorUserId =
       req.adminActor?.userId ??
@@ -688,28 +690,28 @@ export function registerOperationsAdminRoutes(router: Router) {
       });
     }
 
-    await db.transaction(async (tx) => {
-      await tx
-        .delete(userPins)
-        .where(
-          and(
-            eq(userPins.userId, actorUserId),
-            eq(userPins.surface, "admin_home"),
-          ),
-        );
+    // No nested db.transaction() -- db is already inside the transaction
+    // withAdminTenantDb opened, so this delete+insert is already atomic.
+    await db
+      .delete(userPins)
+      .where(
+        and(
+          eq(userPins.userId, actorUserId),
+          eq(userPins.surface, "admin_home"),
+        ),
+      );
 
-      if (itemKeys.length) {
-        await tx.insert(userPins).values(
-          itemKeys.map((itemKey, index) => ({
-            userId: actorUserId,
-            surface: "admin_home",
-            itemKey,
-            sortOrder: index,
-          })),
-        );
-      }
-    });
+    if (itemKeys.length) {
+      await db.insert(userPins).values(
+        itemKeys.map((itemKey, index) => ({
+          userId: actorUserId,
+          surface: "admin_home",
+          itemKey,
+          sortOrder: index,
+        })),
+      );
+    }
 
     return res.json({ success: true });
-  });
+  }));
 }
