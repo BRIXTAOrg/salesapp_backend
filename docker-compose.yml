@@ -1,12 +1,12 @@
 services:
-  kamdhenuappserver:
+  salesappserver:
     # Use your Docker image name here
-    image: goswamirohit/kamdhenuppserver:v1
-    container_name: kamdhenuappserver
+    image: goswamirohit/salesappserver:v1
+    container_name: salesappserver
     restart: unless-stopped
     # Maps host port 4000 to the container's exposed port 8000 (from your Dockerfile)
     ports:
-      - "55011:8000"
+      - "55009:8000"
     # Tells Docker Compose to read environment variables from a .env file in the same directory
     env_file:
       - .env
@@ -21,6 +21,7 @@ services:
       - JWT_SECRET=${JWT_SECRET}
       - PORT=${PORT}
       - NODE_ENV=${NODE_ENV}
+      - ADMIN_SERVICE_SECRET=${ADMIN_SERVICE_SECRET}
 
   #nginx
   # nginx:
