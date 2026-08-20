@@ -3,39 +3,76 @@ import {
   type Express,
 } from "express";
 
-import { requireAdminService } from "../middleware/adminService";
-import { registerEmployeeAdminRoutes } from "./applianceEmployees";
-import { registerResponsibilityAdminRoutes } from "./applianceResponsibilities";
-import { registerOperationsAdminRoutes } from "./applianceOperations";
-import { registerHomeAdminRoutes } from "./applianceHome";
+import {
+  requireAdminService,
+} from "../middleware/adminService";
 
+import {
+  PLATFORM_PRIMITIVES,
+} from "../platform/primitives";
+
+import {
+  registerEmployeeAdminRoutes,
+} from "./applianceEmployees";
+
+import {
+  registerResponsibilityAdminRoutes,
+} from "./applianceResponsibilities";
+
+import {
+  registerWorkflowAdminRoutes,
+} from "./applianceWorkflows";
+
+import {
+  registerRuntimeAdminRoutes,
+} from "./applianceRuntime";
+
+/**
+ * Admin API intentionally contains only the control plane required by the
+ * Responsibility + generic CRUD + Workflow architecture.
+ */
 export default function setupApplianceAdminRoutes(
   app: Express,
 ) {
-  const router = Router();
+  const router =
+    Router();
 
-  // Protect every admin control-plane endpoint.
-  router.use(requireAdminService);
+  router.use(
+    requireAdminService,
+  );
 
-  // Register all appliance admin feature routes on one shared router.
-  registerHomeAdminRoutes(router);
-  registerEmployeeAdminRoutes(router);
-  registerResponsibilityAdminRoutes(router);
-  registerOperationsAdminRoutes(router);
+  router.get(
+    "/primitives",
+    (_req, res) =>
+      res.json({
+        success: true,
+        primitives:
+          PLATFORM_PRIMITIVES,
+      }),
+  );
 
-  // Permanent Field Control API.
+  registerEmployeeAdminRoutes(
+    router,
+  );
+
+  registerResponsibilityAdminRoutes(
+    router,
+  );
+
+  registerWorkflowAdminRoutes(
+    router,
+  );
+
+  registerRuntimeAdminRoutes(
+    router,
+  );
+
   app.use(
     "/api/admin/appliance",
     router,
   );
 
-  // Backward compatibility with the earlier Flow 1 CMS proxy.
-  app.use(
-    "/api/admin/flow1",
-    router,
-  );
-
   console.log(
-    "[ADMIN] Appliance routes mounted at /api/admin/appliance",
+    "[ADMIN] Generic platform API mounted at /api/admin/appliance",
   );
 }

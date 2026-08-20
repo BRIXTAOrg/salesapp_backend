@@ -1,197 +1,216 @@
 import type {
   Express,
-  Response,
 } from "express";
 
 import {
-  and,
-  asc,
   eq,
-  sql,
 } from "drizzle-orm";
 
-import type { AppDatabase } from "../db/db";
-import { users } from "../db/schema";
+import {
+  users,
+} from "../db/schema";
+
 import {
   employeeRuntimeState,
-  workItems,
-  workspaceSettings,
 } from "../db/applianceSchema";
+
 import {
   authenticateToken,
   withTenantDb,
   type AuthRequest,
 } from "../middleware/auth";
-import { getResolvedCapabilitiesForUser } from "../services/capabilityResolver";
-import { rankMobileCapabilities } from "../services/mobileHomeRanking";
 
-async function getWorkspaceConfig(db: AppDatabase) {
-  const rows = await db
-    .select()
-    .from(workspaceSettings);
+import {
+  getResolvedCapabilitiesForUser,
+} from "../services/capabilityResolver";
 
-  const settings = Object.fromEntries(
-    rows.map((row) => [
-      row.key,
-      row.value,
-    ]),
-  );
+import {
+  getWorkflowBootstrapForUser,
+} from "../services/workflowBootstrap";
 
-  return {
-    dynamicModules: true,
-    adaptiveHome:
-      settings.adaptive_home ??
-      true,
-    devicePolicy:
-      settings.device_policy ?? {
-        oneActiveDevice: false,
-      },
-    offlinePolicy:
-      settings.offline_policy ?? {
-        allowCachedLogin: true,
-      },
-  };
-}
+import {
+  normalizeResponsibilityConfig,
+  ensureResponsibilityActions,
+} from "../platform/responsibility";
 
+import {
+  PLATFORM_PRIMITIVES,
+} from "../platform/primitives";
+
+/**
+ * One bootstrap contract for the generic Responsibility/CRUD/Workflow app.
+ * There are no business-specific modules in this payload.
+ */
 export default function setupMobileBootstrapRoutes(
   app: Express,
 ) {
   app.get(
     "/api/salesApp/bootstrap",
     authenticateToken,
-    withTenantDb<AuthRequest>(async (req, res, db) => {
-      const userId = req.user?.userId;
+    withTenantDb<AuthRequest>(
+      async (
+        req,
+        res,
+        db,
+      ) => {
+        const userId =
+          req.user?.userId;
 
-      if (!userId) {
-        return res.status(401).json({
-          success: false,
-          error: "Unauthenticated.",
-        });
-      }
+        if (!userId) {
+          return res
+            .status(401)
+            .json({
+              success: false,
+              error:
+                "Unauthenticated.",
+            });
+        }
 
-      // Note: this query is now scoped implicitly -- db here is bound to
-      // this request's schema via withTenantDb, so `users` resolves to
-      // this tenant's users table with no explicit schema/company filter
-      // needed anywhere in the query itself.
-      const [user] = await db
-        .select()
-        .from(users)
-        .where(eq(users.id, userId))
-        .limit(1);
-
-      if (
-        !user ||
-        !user.isSalesAppUser ||
-        user.status !== "active"
-      ) {
-        return res.status(403).json({
-          success: false,
-          error:
-            "Mobile access is disabled for this employee.",
-        });
-      }
-
-      const [
-        resolvedCapabilities,
-        assignedWork,
-        config,
-      ] = await Promise.all([
-        getResolvedCapabilitiesForUser(db, userId),
-
-        db
+        const [user] = await db
           .select()
-          .from(workItems)
+          .from(users)
           .where(
-            and(
-              eq(
-                workItems.assigneeUserId,
-                userId,
-              ),
-              sql`${workItems.status} in ('assigned', 'in_progress')`,
+            eq(
+              users.id,
+              userId,
             ),
           )
-          .orderBy(
-            asc(workItems.dueAt),
-            asc(workItems.createdAt),
+          .limit(1);
+
+        if (
+          !user ||
+          !user.isSalesAppUser ||
+          user.status !== "active"
+        ) {
+          return res
+            .status(403)
+            .json({
+              success: false,
+              error:
+                "Mobile access is disabled for this employee.",
+            });
+        }
+
+        const resolved =
+          await getResolvedCapabilitiesForUser(
+            db,
+            userId,
+          );
+
+        for (const responsibility of resolved) {
+          await ensureResponsibilityActions(
+            db,
+            {
+              id:
+                responsibility.id,
+              key:
+                responsibility.key,
+              title:
+                responsibility.title,
+            },
+          );
+        }
+
+        const workflow =
+          await getWorkflowBootstrapForUser(
+            db,
+            userId,
+          );
+
+        const now =
+          new Date();
+
+        await db
+          .insert(
+            employeeRuntimeState,
           )
-          .limit(100),
+          .values({
+            userId,
+            lastBootstrapAt:
+              now,
+            lastSeenAt:
+              now,
+            updatedAt:
+              now,
+          })
+          .onConflictDoUpdate({
+            target:
+              employeeRuntimeState.userId,
+            set: {
+              lastBootstrapAt:
+                now,
+              lastSeenAt:
+                now,
+              updatedAt:
+                now,
+            },
+          });
 
-        getWorkspaceConfig(db),
-      ]);
+        return res.json({
+          success: true,
 
-      const now = new Date();
-
-      await db
-        .insert(employeeRuntimeState)
-        .values({
-          userId,
-          lastBootstrapAt: now,
-          lastSeenAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target:
-            employeeRuntimeState.userId,
-          set: {
-            lastBootstrapAt: now,
-            lastSeenAt: now,
-            updatedAt: now,
+          user: {
+            id:
+              user.id,
+            employeeCode:
+              user.salesmanLoginId,
+            name:
+              user.displayName ??
+              user.username ??
+              user.salesmanLoginId,
+            department:
+              user.department,
+            designation:
+              user.designation,
+            role:
+              user.role,
+            area:
+              user.area,
+            zone:
+              user.zone,
+            reportsToId:
+              user.reportsToId,
           },
+
+          responsibilities:
+            resolved.map(
+              (responsibility) => ({
+                id:
+                  responsibility.id,
+                key:
+                  responsibility.key,
+                title:
+                  responsibility.title,
+                description:
+                  responsibility.description,
+                icon:
+                  responsibility.icon,
+                definition:
+                  normalizeResponsibilityConfig(
+                    responsibility.config,
+                  ),
+                source:
+                  responsibility.source,
+                sortOrder:
+                  responsibility.sortOrder,
+              }),
+            ),
+
+          workflow,
+          readyActions:
+            workflow.readyActions,
+          blockedActions:
+            workflow.blockedActions,
+          pendingApprovals:
+            workflow.pendingApprovals,
+
+          primitives:
+            PLATFORM_PRIMITIVES,
+
+          generatedAt:
+            now.toISOString(),
         });
-
-      const rankedCapabilities =
-        await rankMobileCapabilities(
-          db,
-          userId,
-          resolvedCapabilities,
-        );
-
-      const modules =
-        rankedCapabilities.map(
-          ({
-            sortOrder: _sortOrder,
-            ...capability
-          }) => capability,
-        );
-
-      return res.status(200).json({
-        success: true,
-
-        user: {
-          id: user.id,
-          employeeCode:
-            user.salesmanLoginId,
-          name:
-            user.displayName ??
-            user.username ??
-            user.salesmanLoginId,
-          department:
-            user.department,
-          designation:
-            user.designation,
-          role: user.role,
-          area: user.area,
-          zone: user.zone,
-          reportsToId:
-            user.reportsToId,
-        },
-
-        permissions:
-          rankedCapabilities.map(
-            (capability) =>
-              `capability.${capability.key}.use`,
-          ),
-
-        modules,
-
-        workItems:
-          assignedWork,
-
-        config,
-
-        generatedAt:
-          now.toISOString(),
-      });
-    }),
+      },
+    ),
   );
 }

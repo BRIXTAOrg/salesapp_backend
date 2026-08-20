@@ -3,9 +3,20 @@ import express, {
   type Request,
   type Response,
 } from "express";
+
 import cors from "cors";
-import path from "path";
+import path from "node:path";
 import dotenv from "dotenv";
+
+import setupAuthRoutes from "./src/auth/login";
+import setupMobileBootstrapRoutes from "./src/auth/bootstrap";
+import setupMobilePlatformRoutes from "./src/mobile/platform";
+import setupApplianceAdminRoutes from "./src/admin/appliance";
+import setupUploadRoutes from "./src/photoUpload/upload";
+
+import {
+  PLATFORM_PRIMITIVES,
+} from "./src/platform/primitives";
 
 dotenv.config({
   path: path.resolve(
@@ -14,60 +25,23 @@ dotenv.config({
   ),
 });
 
-// AUTH + APPLIANCE CONTROL PLANE
-import setupAuthRoutes from "./src/auth/login";
-import setupMobileBootstrapRoutes from "./src/auth/bootstrap";
-import setupApplianceAdminRoutes from "./src/admin/appliance";
-import setupMobileApplianceRoutes from "./src/mobile/appliance";
+const app: Express =
+  express();
 
-// PHOTO UPLOAD
-import setupUploadRoutes from "./src/photoUpload/upload";
+const DEFAULT_PORT =
+  8000;
 
-// GET ROUTES
-import setupDealerRoutes from "./src/getRoutes/dealer";
-import setupDvrRoutes from "./src/getRoutes/dvr";
-import setupPjpRoutes from "./src/getRoutes/pjp";
-import setupLeaveRoutes from "./src/getRoutes/leave";
-import setupAttendanceRoutes from "./src/getRoutes/attendance";
-import setupInstitutionRoutes from "./src/getRoutes/institution";
-import setupInfluencerRoutes from "./src/getRoutes/influencer";
-import setupDistributorRoutes from "./src/getRoutes/distributor";
-import setupOutletRoutes from "./src/getRoutes/outlet";
-import setupTadaBillRoutes from "./src/getRoutes/tadabill";
+const parsedPort =
+  Number.parseInt(
+    process.env.PORT ??
+      String(DEFAULT_PORT),
+    10,
+  );
 
-// POST ROUTES
-import setupAttendanceInRoutes from "./src/postRoutes/attendanceIN";
-import setupAttendanceOutRoutes from "./src/postRoutes/attendanceOUT";
-import setupDealerPostRoutes from "./src/postRoutes/dealer";
-import setupDvrPostRoutes from "./src/postRoutes/dvr";
-import setupLeavePostRoutes from "./src/postRoutes/leave";
-import setupPjpPostRoutes from "./src/postRoutes/pjp";
-import setupInstitutionPostRoutes from "./src/postRoutes/institution";
-import setupInfluencerPostRoutes from "./src/postRoutes/influencer";
-import setupDistributorPostRoutes from "./src/postRoutes/distributor";
-import setupOutletPostRoutes from "./src/postRoutes/outlet";
-import setupTadaBillPostRoutes from "./src/postRoutes/tadabill";
-
-// UPDATE ROUTES
-import setupDealerUpdateRoutes from "./src/updateRoutes/dealer";
-import setupDvrUpdateRoutes from "./src/updateRoutes/dvr";
-import setupLeaveUpdateRoutes from "./src/updateRoutes/leave";
-import setupPjpUpdateRoutes from "./src/updateRoutes/pjp";
-import setupInstitutionUpdateRoutes from "./src/updateRoutes/institution";
-import setupInfluencerUpdateRoutes from "./src/updateRoutes/influencer";
-import setupDistributorUpdateRoutes from "./src/updateRoutes/distributor";
-import setupOutletUpdateRoutes from "./src/updateRoutes/outlet";
-import setupTadaBillUpdateRoutes from "./src/updateRoutes/tadabill";
-
-const app: Express = express();
-
-const DEFAULT_PORT = 8000;
-const parsedPort = Number.parseInt(
-  process.env.PORT ?? String(DEFAULT_PORT),
-  10,
-);
 const PORT =
-  Number.isNaN(parsedPort)
+  Number.isNaN(
+    parsedPort,
+  )
     ? DEFAULT_PORT
     : parsedPort;
 
@@ -79,41 +53,40 @@ app.use(
   }),
 );
 
-// REQUEST LOGGER
 app.use(
   (
     req: Request,
     res: Response,
     next,
   ) => {
-    const startedAt = Date.now();
-    const requestTime =
-      new Date().toISOString();
+    const startedAt =
+      Date.now();
 
-    res.on("finish", () => {
-      const duration =
-        Date.now() - startedAt;
-      const status =
-        res.statusCode;
+    res.on(
+      "finish",
+      () => {
+        const status =
+          res.statusCode;
 
-      const marker =
-        status >= 500
-          ? "❌"
-          : status >= 400
-            ? "⚠️"
-            : "✅";
+        const marker =
+          status >= 500
+            ? "❌"
+            : status >= 400
+              ? "⚠️"
+              : "✅";
 
-      console.log(
-        [
-          marker,
-          requestTime,
-          req.method,
-          req.originalUrl,
-          `-> ${status}`,
-          `(${duration}ms)`,
-        ].join(" "),
-      );
-    });
+        console.log(
+          [
+            marker,
+            new Date().toISOString(),
+            req.method,
+            req.originalUrl,
+            `-> ${status}`,
+            `(${Date.now() - startedAt}ms)`,
+          ].join(" "),
+        );
+      },
+    );
 
     next();
   },
@@ -125,91 +98,66 @@ app.get(
     _req: Request,
     res: Response,
   ) =>
-    res.status(200).json({
+    res.json({
       success: true,
-      message:
-        "Kamdhenu FieldForce Appliance Backend",
       service:
-        "salesapp_backend",
-      port: PORT,
-      capabilities: {
-        employeeLifecycle:
-          true,
-        dynamicResponsibilities:
-          true,
-        inheritedAssignments:
-          true,
-        workAssignments:
-          true,
-        approvals: true,
-        adminOwnershipFallback:
-          true,
-        adaptiveAdminHome:
-          true,
-        devices: true,
-        dynamicSubmissions:
-          true,
+        "BRIXTA Responsibility Runtime",
+      architecture:
+        "responsibility-crud-workflow",
+      primitiveVersion:
+        PLATFORM_PRIMITIVES.version,
+      endpoints: {
+        auth:
+          "/api/salesApp/auth/login",
+        bootstrap:
+          "/api/salesApp/bootstrap",
+        records:
+          "/api/salesApp/records/:responsibilityKey",
+        workflow:
+          "/api/salesApp/workflow/state",
+        media:
+          "/api/salesApp/media",
+        admin:
+          "/api/admin/appliance",
       },
     }),
 );
 
-// AUTH + APPLIANCE
+// Employee identity + generated workspace.
 setupAuthRoutes(app);
-setupMobileBootstrapRoutes(app);
-setupMobileApplianceRoutes(app);
-setupApplianceAdminRoutes(app);
+setupMobileBootstrapRoutes(
+  app,
+);
 
-// EXISTING GET ROUTES
-setupDealerRoutes(app);
-setupDvrRoutes(app);
-setupPjpRoutes(app);
-setupLeaveRoutes(app);
-setupAttendanceRoutes(app);
-setupInstitutionRoutes(app);
-setupInfluencerRoutes(app);
-setupDistributorRoutes(app);
-setupOutletRoutes(app);
-setupTadaBillRoutes(app);
+// Generic CRUD + workflow runtime. This is the business API.
+setupMobilePlatformRoutes(
+  app,
+);
 
-// EXISTING POST ROUTES
-setupAttendanceInRoutes(app);
-setupAttendanceOutRoutes(app);
-setupDealerPostRoutes(app);
-setupDvrPostRoutes(app);
-setupLeavePostRoutes(app);
-setupPjpPostRoutes(app);
-setupInstitutionPostRoutes(app);
-setupInfluencerPostRoutes(app);
-setupDistributorPostRoutes(app);
-setupOutletPostRoutes(app);
-setupTadaBillPostRoutes(app);
-
-// EXISTING UPDATE ROUTES
-setupDealerUpdateRoutes(app);
-setupDvrUpdateRoutes(app);
-setupLeaveUpdateRoutes(app);
-setupPjpUpdateRoutes(app);
-setupInstitutionUpdateRoutes(app);
-setupInfluencerUpdateRoutes(app);
-setupDistributorUpdateRoutes(app);
-setupOutletUpdateRoutes(app);
-setupTadaBillUpdateRoutes(app);
-
-// PHOTO UPLOAD
+// Generic media primitive for photo/file/signature/audio/etc.
 setupUploadRoutes(app);
 
-// 404
+// Admin control plane: employees, Responsibilities, Workflows, runtime.
+setupApplianceAdminRoutes(
+  app,
+);
+
 app.use(
   (
     req: Request,
     res: Response,
   ) =>
-    res.status(404).json({
-      success: false,
-      error: "Route not found.",
-      method: req.method,
-      path: req.originalUrl,
-    }),
+    res
+      .status(404)
+      .json({
+        success: false,
+        error:
+          "Route not found.",
+        method:
+          req.method,
+        path:
+          req.originalUrl,
+      }),
 );
 
 app.listen(
@@ -220,7 +168,7 @@ app.listen(
       "==============================================",
     );
     console.log(
-      " KAMDHENU FIELDFORCE APPLIANCE BACKEND",
+      " BRIXTA RESPONSIBILITY RUNTIME",
     );
     console.log(
       "==============================================",
@@ -229,13 +177,13 @@ app.listen(
       ` Server: http://localhost:${PORT}`,
     );
     console.log(
-      ` Mode:   ${process.env.NODE_ENV ?? "development"}`,
+      ` Primitives: ${PLATFORM_PRIMITIVES.version}`,
     );
     console.log(
-      " Control Plane: READY",
+      " Business routes: GENERIC CRUD ONLY",
     );
     console.log(
-      " Request Logging: ENABLED",
+      " Workflow runtime: ENABLED",
     );
     console.log(
       "==============================================",
