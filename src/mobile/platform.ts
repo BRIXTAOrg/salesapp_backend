@@ -284,6 +284,8 @@ export default function setupMobilePlatformRoutes(
                 req.body?.payload,
               status:
                 req.body?.status,
+              appActionKey:
+                req.body?.appActionKey,
               clientMutationId:
                 req.body?.clientMutationId,
               clientCreatedAt:
@@ -381,6 +383,8 @@ export default function setupMobilePlatformRoutes(
                 req.body?.payload,
               status:
                 req.body?.status,
+              appActionKey:
+                req.body?.appActionKey,
               workflowInstanceId:
                 req.body?.workflowInstanceId,
             },

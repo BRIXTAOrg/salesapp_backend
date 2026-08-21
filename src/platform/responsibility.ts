@@ -36,6 +36,11 @@ export type ResponsibilityConfig = {
     fields: ResponsibilityField[];
     strict: boolean;
   };
+  app: {
+    renderer: string;
+    actions: Record<string, unknown>[];
+    config: Record<string, unknown>;
+  };
   output: {
     renderer: string;
     config: Record<string, unknown>;
@@ -149,6 +154,9 @@ export function normalizeResponsibilityConfig(
   const inputRaw = objectValue(
     raw.input,
   );
+  const appRaw = objectValue(
+    raw.app,
+  );
   const outputRaw = objectValue(
     raw.output,
   );
@@ -192,6 +200,32 @@ export function normalizeResponsibilityConfig(
           inputRaw.strict ??
             raw.strict ??
             false,
+        ),
+    },
+
+    app: {
+      renderer:
+        String(
+          appRaw.renderer ??
+            "action_form_v1",
+        ).trim() ||
+        "action_form_v1",
+      actions:
+        Array.isArray(
+          appRaw.actions,
+        )
+          ? appRaw.actions
+              .map(objectValue)
+              .filter(
+                (action) =>
+                  Object.keys(
+                    action,
+                  ).length > 0,
+              )
+          : [],
+      config:
+        objectValue(
+          appRaw.config,
         ),
     },
 

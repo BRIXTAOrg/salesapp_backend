@@ -148,6 +148,465 @@ function crudDisabled(
   };
 }
 
+type ResponsibilityAppAction = {
+  key: string;
+  operation: "create" | "update";
+  status: string;
+  fieldKeys: string[];
+  requiredFieldKeys: string[];
+  visibility: {
+    mode:
+      | "always"
+      | "no_record"
+      | "latest_status_is"
+      | "latest_status_is_not";
+    status?: string;
+  };
+  target?: {
+    mode?: string;
+    status?: string;
+  };
+  capture?: {
+    location?: {
+      fieldKey?: string;
+      required?: boolean;
+    };
+  };
+};
+
+function stringList(
+  value: unknown,
+) {
+  return Array.isArray(value)
+    ? value
+        .map((item) =>
+          String(item ?? "").trim(),
+        )
+        .filter(Boolean)
+    : [];
+}
+
+function responsibilityAppActions(
+  config: ReturnType<
+    typeof normalizeResponsibilityConfig
+  >,
+): ResponsibilityAppAction[] {
+  const rawActions =
+    config.app.actions;
+
+  return rawActions
+    .map((value): ResponsibilityAppAction | null => {
+      const raw = objectValue(value);
+      const key = String(
+        raw.key ?? "",
+      ).trim();
+      const operation =
+        String(
+          raw.operation ??
+            "create",
+        ).trim() === "update"
+          ? "update"
+          : "create";
+
+      if (!key) {
+        return null;
+      }
+
+      const visibilityRaw =
+        objectValue(
+          raw.visibility,
+        );
+      const visibilityMode =
+        String(
+          visibilityRaw.mode ??
+            "always",
+        ).trim();
+
+      const allowedModes =
+        new Set([
+          "always",
+          "no_record",
+          "latest_status_is",
+          "latest_status_is_not",
+        ]);
+
+      const captureRaw =
+        objectValue(raw.capture);
+      const locationRaw =
+        objectValue(
+          captureRaw.location,
+        );
+
+      return {
+        key,
+        operation,
+        status:
+          String(
+            raw.status ??
+              "submitted",
+          ).trim() ||
+          "submitted",
+        fieldKeys:
+          stringList(
+            raw.fieldKeys,
+          ),
+        requiredFieldKeys:
+          stringList(
+            raw.requiredFieldKeys,
+          ),
+        visibility: {
+          mode:
+            allowedModes.has(
+              visibilityMode,
+            )
+              ? visibilityMode as
+                  ResponsibilityAppAction["visibility"]["mode"]
+              : "always",
+          status:
+            String(
+              visibilityRaw.status ??
+                "",
+            ).trim() ||
+            undefined,
+        },
+        target: {
+          mode:
+            String(
+              objectValue(
+                raw.target,
+              ).mode ?? "",
+            ).trim() ||
+            undefined,
+          status:
+            String(
+              objectValue(
+                raw.target,
+              ).status ?? "",
+            ).trim() ||
+            undefined,
+        },
+        capture:
+          Object.keys(
+            locationRaw,
+          ).length
+            ? {
+                location: {
+                  fieldKey:
+                    String(
+                      locationRaw.fieldKey ??
+                        "",
+                    ).trim() ||
+                    undefined,
+                  required:
+                    locationRaw.required ===
+                    true,
+                },
+              }
+            : undefined,
+      } satisfies ResponsibilityAppAction;
+    })
+    .filter(
+      (
+        action,
+      ): action is ResponsibilityAppAction =>
+        Boolean(action),
+    );
+}
+
+function emptyAppValue(
+  value: unknown,
+) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return true;
+  }
+
+  if (typeof value === "string") {
+    return !value.trim();
+  }
+
+  if (Array.isArray(value)) {
+    return value.length === 0;
+  }
+
+  if (
+    typeof value === "object"
+  ) {
+    return Object.keys(
+      value as Record<
+        string,
+        unknown
+      >,
+    ).length === 0;
+  }
+
+  return false;
+}
+
+async function latestResponsibilityRecord(
+  db: AppDatabase,
+  input: {
+    userId: number;
+    responsibilityId: number;
+  },
+) {
+  const [record] = await db
+    .select()
+    .from(
+      dynamicSubmissions,
+    )
+    .where(
+      and(
+        eq(
+          dynamicSubmissions.userId,
+          input.userId,
+        ),
+        eq(
+          dynamicSubmissions.capabilityId,
+          input.responsibilityId,
+        ),
+        ne(
+          dynamicSubmissions.status,
+          "deleted",
+        ),
+      ),
+    )
+    .orderBy(
+      desc(
+        dynamicSubmissions.updatedAt,
+      ),
+    )
+    .limit(1);
+
+  return record ?? null;
+}
+
+function appActionVisibilityAllowed(
+  action: ResponsibilityAppAction,
+  latestStatus: string | null,
+  hasRecord: boolean,
+) {
+  const expected =
+    action.visibility.status;
+
+  switch (
+    action.visibility.mode
+  ) {
+    case "no_record":
+      return !hasRecord;
+    case "latest_status_is":
+      return Boolean(expected) &&
+        latestStatus === expected;
+    case "latest_status_is_not":
+      return Boolean(expected) &&
+        latestStatus !== expected;
+    default:
+      return true;
+  }
+}
+
+async function enforceAppAction(
+  db: AppDatabase,
+  input: {
+    config: ReturnType<
+      typeof normalizeResponsibilityConfig
+    >;
+    userId: number;
+    responsibilityId: number;
+    operation: "create" | "update";
+    appActionKey?: unknown;
+    payload: Record<string, unknown>;
+    existingRecord?:
+      typeof dynamicSubmissions.$inferSelect |
+      null;
+  },
+): Promise<
+  | {
+      ok: true;
+      action: ResponsibilityAppAction | null;
+      status: string | null;
+    }
+  | RecordEngineError
+> {
+  const actions =
+    responsibilityAppActions(
+      input.config,
+    );
+
+  if (!actions.length) {
+    return {
+      ok: true,
+      action: null,
+      status: null,
+    };
+  }
+
+  const actionKey =
+    typeof input.appActionKey ===
+      "string"
+      ? input.appActionKey.trim()
+      : "";
+
+  if (!actionKey) {
+    return {
+      ok: false,
+      status: 400,
+      code:
+        "APP_ACTION_REQUIRED",
+      error:
+        "This Responsibility must be executed through one of its configured app actions.",
+    };
+  }
+
+  const action =
+    actions.find(
+      (candidate) =>
+        candidate.key ===
+        actionKey,
+    );
+
+  if (!action) {
+    return {
+      ok: false,
+      status: 400,
+      code:
+        "APP_ACTION_NOT_FOUND",
+      error:
+        "The requested app action is not defined by this Responsibility.",
+    };
+  }
+
+  if (
+    action.operation !==
+    input.operation
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      code:
+        "APP_ACTION_OPERATION_MISMATCH",
+      error:
+        `App action ${action.key} requires ${action.operation}, not ${input.operation}.`,
+    };
+  }
+
+  const allowedKeys =
+    new Set(
+      action.fieldKeys,
+    );
+
+  const capturedLocationKey =
+    action.capture?.location
+      ?.fieldKey;
+
+  if (capturedLocationKey) {
+    allowedKeys.add(
+      capturedLocationKey,
+    );
+  }
+
+  for (const key of Object.keys(
+    input.payload,
+  )) {
+    if (!allowedKeys.has(key)) {
+      return {
+        ok: false,
+        status: 400,
+        code:
+          "APP_ACTION_FIELD_NOT_ALLOWED",
+        error:
+          `${key} is not accepted by the ${action.key} app action.`,
+      };
+    }
+  }
+
+  const requiredKeys =
+    new Set(
+      action.requiredFieldKeys,
+    );
+
+  if (
+    action.capture?.location
+      ?.required &&
+    capturedLocationKey
+  ) {
+    requiredKeys.add(
+      capturedLocationKey,
+    );
+  }
+
+  for (const key of requiredKeys) {
+    if (
+      emptyAppValue(
+        input.payload[key],
+      )
+    ) {
+      return {
+        ok: false,
+        status: 400,
+        code:
+          "APP_ACTION_REQUIRED_FIELD",
+        error:
+          `${key} is required by the ${action.key} app action.`,
+      };
+    }
+  }
+
+  const latest =
+    await latestResponsibilityRecord(
+      db,
+      {
+        userId:
+          input.userId,
+        responsibilityId:
+          input.responsibilityId,
+      },
+    );
+
+  if (
+    !appActionVisibilityAllowed(
+      action,
+      latest?.status ?? null,
+      Boolean(latest),
+    )
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      code:
+        "APP_ACTION_NOT_AVAILABLE",
+      error:
+        "This app action is not available in the current Responsibility state.",
+    };
+  }
+
+  if (
+    input.operation ===
+      "update" &&
+    action.target?.status &&
+    input.existingRecord?.status !==
+      action.target.status
+  ) {
+    return {
+      ok: false,
+      status: 409,
+      code:
+        "APP_ACTION_TARGET_MISMATCH",
+      error:
+        "The selected record does not match this app action's target state.",
+    };
+  }
+
+  return {
+    ok: true,
+    action,
+    status:
+      action.status,
+  };
+}
+
 export async function listOwnRecords(
   db: AppDatabase,
   input: {
@@ -416,6 +875,7 @@ export async function createRecord(
     responsibilityKey: string;
     payload: unknown;
     status?: unknown;
+    appActionKey?: unknown;
     clientMutationId?: unknown;
     clientCreatedAt?: unknown;
     workflowInstanceId?: unknown;
@@ -441,8 +901,96 @@ export async function createRecord(
     return crudDisabled("create");
   }
 
+  const suppliedClientMutationId =
+    typeof input.clientMutationId ===
+      "string"
+      ? input.clientMutationId.trim()
+      : "";
+
+  if (
+    suppliedClientMutationId &&
+    !validUuid(
+      suppliedClientMutationId,
+    )
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      code:
+        "INVALID_CLIENT_MUTATION_ID",
+      error:
+        "clientMutationId must be a UUID when supplied.",
+    };
+  }
+
+  const clientMutationId =
+    suppliedClientMutationId ||
+    crypto.randomUUID();
+
+  // Idempotency must run before app-state/workflow checks. A mobile client may
+  // retry after the original request committed but its response was lost; the
+  // committed record itself may already have changed the action visibility.
+  if (suppliedClientMutationId) {
+    const [existing] = await db
+      .select()
+      .from(
+        dynamicSubmissions,
+      )
+      .where(
+        and(
+          eq(
+            dynamicSubmissions.clientMutationId,
+            clientMutationId,
+          ),
+          eq(
+            dynamicSubmissions.userId,
+            input.userId,
+          ),
+          eq(
+            dynamicSubmissions.capabilityId,
+            resolved.responsibility.id,
+          ),
+        ),
+      )
+      .limit(1);
+
+    if (existing) {
+      return {
+        ok: true,
+        value: {
+          record:
+            existing,
+          idempotent: true,
+          workflowInstanceIds: [],
+        },
+      };
+    }
+  }
+
   const payload =
     objectValue(input.payload);
+
+  const appAction =
+    await enforceAppAction(
+      db,
+      {
+        config:
+          resolved.config,
+        userId:
+          input.userId,
+        responsibilityId:
+          resolved.responsibility.id,
+        operation:
+          "create",
+        appActionKey:
+          input.appActionKey,
+        payload,
+      },
+    );
+
+  if (!appAction.ok) {
+    return appAction;
+  }
 
   const validationErrors =
     validateResponsibilityPayload(
@@ -501,71 +1049,13 @@ export async function createRecord(
     };
   }
 
-  const suppliedClientMutationId =
-    typeof input.clientMutationId ===
-      "string"
-      ? input.clientMutationId.trim()
-      : "";
-
-  if (
-    suppliedClientMutationId &&
-    !validUuid(
-      suppliedClientMutationId,
-    )
-  ) {
-    return {
-      ok: false,
-      status: 400,
-      code:
-        "INVALID_CLIENT_MUTATION_ID",
-      error:
-        "clientMutationId must be a UUID when supplied.",
-    };
-  }
-
-  const clientMutationId =
-    suppliedClientMutationId ||
-    crypto.randomUUID();
-
-  const [existing] = await db
-    .select()
-    .from(
-      dynamicSubmissions,
-    )
-    .where(
-      and(
-        eq(
-          dynamicSubmissions.clientMutationId,
-          clientMutationId,
-        ),
-        eq(
-          dynamicSubmissions.userId,
-          input.userId,
-        ),
-        eq(
-          dynamicSubmissions.capabilityId,
-          resolved.responsibility.id,
-        ),
-      ),
-    )
-    .limit(1);
-
-  if (existing) {
-    return {
-      ok: true,
-      value: {
-        record:
-          existing,
-        idempotent: true,
-        workflowInstanceIds:
-          authorization.workflowInstanceId
-            ? [
-                authorization.workflowInstanceId,
-              ]
-            : [],
-      },
-    };
-  }
+  const effectiveStatus =
+    appAction.status ??
+    (typeof input.status ===
+        "string" &&
+      input.status.trim()
+      ? input.status.trim()
+      : "submitted");
 
   const [record] = await db
     .insert(
@@ -578,11 +1068,7 @@ export async function createRecord(
       capabilityId:
         resolved.responsibility.id,
       status:
-        typeof input.status ===
-          "string" &&
-        input.status.trim()
-          ? input.status.trim()
-          : "submitted",
+        effectiveStatus,
       payload,
       clientCreatedAt:
         input.clientCreatedAt
@@ -618,6 +1104,9 @@ export async function createRecord(
             resolved.responsibility.key,
           recordId:
             record.id,
+          appActionKey:
+            appAction.action?.key ??
+            null,
         },
         sourceType:
           "responsibility_record",
@@ -651,6 +1140,7 @@ export async function updateRecord(
     recordId: string;
     payload: unknown;
     status?: unknown;
+    appActionKey?: unknown;
     workflowInstanceId?: unknown;
   },
 ): Promise<RecordEngineResult<{
@@ -712,6 +1202,31 @@ export async function updateRecord(
 
   const patch =
     objectValue(input.payload);
+
+  const appAction =
+    await enforceAppAction(
+      db,
+      {
+        config:
+          resolved.config,
+        userId:
+          input.userId,
+        responsibilityId:
+          resolved.responsibility.id,
+        operation:
+          "update",
+        appActionKey:
+          input.appActionKey,
+        payload:
+          patch,
+        existingRecord:
+          existing,
+      },
+    );
+
+  if (!appAction.ok) {
+    return appAction;
+  }
 
   const validationErrors =
     validateResponsibilityPayload(
@@ -781,6 +1296,14 @@ export async function updateRecord(
     ...patch,
   };
 
+  const effectiveStatus =
+    appAction.status ??
+    (typeof input.status ===
+        "string" &&
+      input.status.trim()
+      ? input.status.trim()
+      : existing.status);
+
   const [record] = await db
     .update(
       dynamicSubmissions,
@@ -789,11 +1312,7 @@ export async function updateRecord(
       payload:
         mergedPayload,
       status:
-        typeof input.status ===
-          "string" &&
-        input.status.trim()
-          ? input.status.trim()
-          : existing.status,
+        effectiveStatus,
       updatedAt:
         new Date(),
       serverVersion:
@@ -829,6 +1348,9 @@ export async function updateRecord(
           resolved.responsibility.key,
         recordId:
           record.id,
+        appActionKey:
+          appAction.action?.key ??
+          null,
       },
       sourceType:
         "responsibility_record",
