@@ -94,46 +94,6 @@ export function registerResponsibilityAdminRoutes(router: Router) {
     }),
   );
 
-  /**
-   * Historical Responsibility catalog.
-   *
-   * A deleted Responsibility remains in mobile_capabilities so historical
-   * dynamic_submissions can continue referencing it.
-   *
-   * It is NOT active and is NOT delivered to employee devices.
-   */
-  router.get(
-    "/archived-responsibilities",
-    withAdminTenantDb<AdminRequest>(async (_req, res, db) => {
-      const rows = await db
-        .select()
-        .from(mobileCapabilities)
-        .orderBy(asc(mobileCapabilities.title));
-
-      const archived = rows.filter(
-        (responsibility) =>
-          objectValue(responsibility.config).__brixtaDeleted === true,
-      );
-
-      return res.json({
-        success: true,
-
-        responsibilities: archived.map((responsibility) => ({
-          ...responsibility,
-
-          type: "record",
-
-          definition: normalizeResponsibilityConfig(responsibility.config),
-
-          archived: true,
-
-          deletedAt:
-            objectValue(responsibility.config).__brixtaDeletedAt ?? null,
-        })),
-      });
-    }),
-  );
-
   router.post(
     "/responsibilities",
     withAdminTenantDb<AdminRequest>(async (req, res, db) => {

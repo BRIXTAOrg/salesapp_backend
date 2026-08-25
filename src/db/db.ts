@@ -10,6 +10,7 @@ import {
 import * as coreSchema from "./schema";
 import * as applianceSchema from "./applianceSchema";
 import * as workflowSchema from "./workflowSchema";
+import * as platformVNextSchema from "./platformVNextSchema";
 
 const DATABASE_URL =
   process.env.DATABASE_URL;
@@ -24,6 +25,7 @@ const combinedSchema = {
   ...coreSchema,
   ...applianceSchema,
   ...workflowSchema,
+  ...platformVNextSchema,
 };
 
 export type AppDatabase =
@@ -169,6 +171,7 @@ export {
   pool,
   applianceSchema,
   workflowSchema,
+  platformVNextSchema,
   combinedSchema,
   coreSchema as schema,
 };

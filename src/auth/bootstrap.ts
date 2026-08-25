@@ -1,3 +1,7 @@
+import {
+  createHash,
+} from "node:crypto";
+
 import type {
   Express,
 } from "express";
@@ -5,6 +9,10 @@ import type {
 import {
   eq,
 } from "drizzle-orm";
+
+import type {
+  AppDatabase,
+} from "../db/db";
 
 import {
   users,
@@ -37,9 +45,95 @@ import {
   PLATFORM_PRIMITIVES,
 } from "../platform/primitives";
 
+
+function workspaceRevision(
+  resolved: Awaited<
+    ReturnType<typeof getResolvedCapabilitiesForUser>
+  >,
+  workflow: Awaited<
+    ReturnType<typeof getWorkflowBootstrapForUser>
+  >,
+) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        responsibilities:
+          resolved.map(
+            (item) => ({
+              id:
+                item.id,
+              key:
+                item.key,
+              config:
+                item.config,
+              source:
+                item.source,
+              sortOrder:
+                item.sortOrder,
+            }),
+          ),
+        workflow,
+      }),
+    )
+    .digest("hex");
+}
+
+
+async function buildWorkspace(
+  db: AppDatabase,
+  userId: number,
+  options: {
+    ensureActions?: boolean;
+  } = {},
+) {
+  const resolved =
+    await getResolvedCapabilitiesForUser(
+      db,
+      userId,
+    );
+
+  if (options.ensureActions) {
+    for (const responsibility of resolved) {
+      await ensureResponsibilityActions(
+        db,
+        {
+          id:
+            responsibility.id,
+          key:
+            responsibility.key,
+          title:
+            responsibility.title,
+        },
+      );
+    }
+  }
+
+  const workflow =
+    await getWorkflowBootstrapForUser(
+      db,
+      userId,
+    );
+
+  return {
+    resolved,
+    workflow,
+    revision:
+      workspaceRevision(
+        resolved,
+        workflow,
+      ),
+  };
+}
+
+
 /**
- * One bootstrap contract for the generic Responsibility/CRUD/Workflow app.
- * There are no business-specific modules in this payload.
+ * BRIXTA Employee Runtime
+ *
+ * LOGIN:
+ *   Native + protected.
+ *
+ * POST LOGIN:
+ *   Business Responsibilities come from the CMS.
  */
 export default function setupMobileBootstrapRoutes(
   app: Express,
@@ -66,16 +160,17 @@ export default function setupMobileBootstrapRoutes(
             });
         }
 
-        const [user] = await db
-          .select()
-          .from(users)
-          .where(
-            eq(
-              users.id,
-              userId,
-            ),
-          )
-          .limit(1);
+        const [user] =
+          await db
+            .select()
+            .from(users)
+            .where(
+              eq(
+                users.id,
+                userId,
+              ),
+            )
+            .limit(1);
 
         if (
           !user ||
@@ -91,30 +186,13 @@ export default function setupMobileBootstrapRoutes(
             });
         }
 
-        const resolved =
-          await getResolvedCapabilitiesForUser(
+        const workspace =
+          await buildWorkspace(
             db,
             userId,
-          );
-
-        for (const responsibility of resolved) {
-          await ensureResponsibilityActions(
-            db,
             {
-              id:
-                responsibility.id,
-              key:
-                responsibility.key,
-              title:
-                responsibility.title,
+              ensureActions: true,
             },
-          );
-        }
-
-        const workflow =
-          await getWorkflowBootstrapForUser(
-            db,
-            userId,
           );
 
         const now =
@@ -172,9 +250,19 @@ export default function setupMobileBootstrapRoutes(
               user.reportsToId,
           },
 
+          /*
+           * THIS is the employee's business UI.
+           *
+           * The CMS publishes the generated Responsibility definition into
+           * mobile_capabilities.config.
+           *
+           * Flutter renders this generic contract.
+           */
           responsibilities:
-            resolved.map(
-              (responsibility) => ({
+            workspace.resolved.map(
+              (
+                responsibility,
+              ) => ({
                 id:
                   responsibility.id,
                 key:
@@ -185,10 +273,12 @@ export default function setupMobileBootstrapRoutes(
                   responsibility.description,
                 icon:
                   responsibility.icon,
+
                 definition:
                   normalizeResponsibilityConfig(
                     responsibility.config,
                   ),
+
                 source:
                   responsibility.source,
                 sortOrder:
@@ -196,19 +286,165 @@ export default function setupMobileBootstrapRoutes(
               }),
             ),
 
-          workflow,
+          workflow:
+            workspace.workflow,
+
           readyActions:
-            workflow.readyActions,
+            workspace.workflow
+              .readyActions,
+
           blockedActions:
-            workflow.blockedActions,
+            workspace.workflow
+              .blockedActions,
+
           pendingApprovals:
-            workflow.pendingApprovals,
+            workspace.workflow
+              .pendingApprovals,
 
           primitives:
             PLATFORM_PRIMITIVES,
 
+          /*
+           * Existing Flutter AppSessionController already understands this.
+           */
+          sync: {
+            workspaceRevision:
+              workspace.revision,
+            pollSeconds:
+              15,
+          },
+
+          /*
+           * Explicit architecture contract.
+           */
+          device: {
+            runtimeMode:
+              "cms_compiled_definition",
+            coreLoginProtected:
+              true,
+            legacyBusinessUi:
+              false,
+          },
+
           generatedAt:
             now.toISOString(),
+        });
+      },
+    ),
+  );
+
+
+  /*
+   * Flutter polls this.
+   *
+   * Publish something in CMS
+   *       ↓
+   * hash changes
+   *       ↓
+   * Flutter refreshes bootstrap
+   *       ↓
+   * new Responsibility definition appears.
+   */
+  app.get(
+    "/api/salesApp/sync/state",
+    authenticateToken,
+    withTenantDb<AuthRequest>(
+      async (
+        req,
+        res,
+        db,
+      ) => {
+        const userId =
+          req.user?.userId;
+
+        if (!userId) {
+          return res
+            .status(401)
+            .json({
+              success: false,
+              error:
+                "Unauthenticated.",
+            });
+        }
+
+        const workspace =
+          await buildWorkspace(
+            db,
+            userId,
+          );
+
+        const since =
+          typeof req.query.since ===
+          "string"
+            ? req.query.since
+            : "";
+
+        return res.json({
+          success: true,
+
+          revision:
+            workspace.revision,
+
+          changed:
+            !since ||
+            since !==
+              workspace.revision,
+
+          generatedAt:
+            new Date()
+              .toISOString(),
+        });
+      },
+    ),
+  );
+
+
+  /*
+   * Employee Work feed used by the existing Flutter shell.
+   */
+  app.get(
+    "/api/salesApp/my-work",
+    authenticateToken,
+    withTenantDb<AuthRequest>(
+      async (
+        req,
+        res,
+        db,
+      ) => {
+        const userId =
+          req.user?.userId;
+
+        if (!userId) {
+          return res
+            .status(401)
+            .json({
+              success: false,
+              error:
+                "Unauthenticated.",
+            });
+        }
+
+        const workflow =
+          await getWorkflowBootstrapForUser(
+            db,
+            userId,
+          );
+
+        return res.json({
+          success: true,
+
+          work: {
+            ready:
+              workflow.readyActions,
+            blocked:
+              workflow.blockedActions,
+            approvals:
+              workflow.pendingApprovals,
+          },
+
+          generatedAt:
+            new Date()
+              .toISOString(),
         });
       },
     ),

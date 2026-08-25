@@ -1,0 +1,122 @@
+[
+  {
+    "path": "CHANGED_FILES.txt",
+    "bytes": 997,
+    "sha256": "5acdec6abb6d306cfbd451e16b4cc49306fe5a3a642703f75d56b23d0da358a6"
+  },
+  {
+    "path": "README_APPLY.md",
+    "bytes": 3540,
+    "sha256": "fd9974319435e8859441399d513a62f248d64ccc8dd4b83a7ebdd9ffa1888a4f"
+  },
+  {
+    "path": "index.ts",
+    "bytes": 4253,
+    "sha256": "eafcf391a7b9f2ac157600c71ff129846c6781d01695a760a24d991b05436c98"
+  },
+  {
+    "path": "scripts/test-kernel-backend-v3.mjs",
+    "bytes": 2805,
+    "sha256": "0cf82d5ac20bc4f81c3ecf5c2b1a0830ff6ef47a4f2f5076499ded11900cc663"
+  },
+  {
+    "path": "src/auth/bootstrap.ts",
+    "bytes": 8280,
+    "sha256": "f8533750fbe11bd4d16825d98a425b24b3b3d8ac00f46727e89121b6155c5633"
+  },
+  {
+    "path": "src/db/db.ts",
+    "bytes": 2766,
+    "sha256": "49c6379e56e49194abee35635f06d8be25b6a7f8bc2c6c82452d52de501c6259"
+  },
+  {
+    "path": "src/db/platformVNextSchema.ts",
+    "bytes": 10500,
+    "sha256": "b21e0b9b6ba64a6e11de5e8a269d0a9ba9ba4c445dcb555d8820b70e3a568d39"
+  },
+  {
+    "path": "src/mobile/dataRoutes.ts",
+    "bytes": 5355,
+    "sha256": "95b707ad1cf810463702f81c115945c1150e094de3fe3d265f4acd0bdaa1ca84"
+  },
+  {
+    "path": "src/mobile/deviceRoutes.ts",
+    "bytes": 4651,
+    "sha256": "c453eee33e267af0dbfd7e88026aa9517f3d5bac64a05c52b2cdd4597e77ded3"
+  },
+  {
+    "path": "src/mobile/http.ts",
+    "bytes": 2240,
+    "sha256": "8385cf4a363064e75ff6a8f6e1548dce23ef711c1ec9b578025e85a8e3bc046f"
+  },
+  {
+    "path": "src/mobile/legacyRecordRoutes.ts",
+    "bytes": 3804,
+    "sha256": "6924a8001b01d338cb4f651b101e5a1906ec9d0352b5858281f0ea826864eead"
+  },
+  {
+    "path": "src/mobile/platform.ts",
+    "bytes": 1061,
+    "sha256": "992922d03a248afd4343b4ac0688f9cf59491f7d2e502bba7d54198886a7f338"
+  },
+  {
+    "path": "src/mobile/runtimeRoutes.ts",
+    "bytes": 5895,
+    "sha256": "21ff07d70675d4f20b1c3b9db403b25062e00d52b387dfcbf20ab364b1a70442"
+  },
+  {
+    "path": "src/mobile/workflowRoutes.ts",
+    "bytes": 2048,
+    "sha256": "43b1d22f0ee2df21a8e3a184a42ca9d5cbc31d6834a3ba9139e8b7e1c195b3e7"
+  },
+  {
+    "path": "src/platform/kernel/evaluator.ts",
+    "bytes": 7829,
+    "sha256": "94054f4bd36cd2aec893cf193cfe4f362d926f67aeca4c0e5f82859d1a447efa"
+  },
+  {
+    "path": "src/platform/kernel/parser.ts",
+    "bytes": 1765,
+    "sha256": "eea643982a3617e1fac0f57c7095ebe425bbbef7e07982061e173e9693c15098"
+  },
+  {
+    "path": "src/platform/kernel/runtimeEngine.ts",
+    "bytes": 33880,
+    "sha256": "327ef85c1d741fec5684166f2d71724948649920aa4617dff0cb812f93b2bcac"
+  },
+  {
+    "path": "src/platform/kernel/types.ts",
+    "bytes": 4713,
+    "sha256": "f010b8a3e7f1b1d16eb377cd6226c5ac528975cb9588a84ff76200a14701bfb5"
+  },
+  {
+    "path": "src/platform/primitives.ts",
+    "bytes": 3449,
+    "sha256": "a8d61b8f104d8118811ead559dccc02ebe1d26e2c25be01862eef19e7f256729"
+  },
+  {
+    "path": "src/platform/vnext/dataSourceRuntime.ts",
+    "bytes": 9767,
+    "sha256": "55102bc08019e73efceb6f4c23d53fb9d33f9fd55de272f60a78547e3776f6af"
+  },
+  {
+    "path": "src/platform/vnext/memoryRuntime.ts",
+    "bytes": 2539,
+    "sha256": "5c29d5bd0fa0cf9ffdfb5c728c0b6fd694d2e701cc6e49ad1f8a442ffb8b0d6a"
+  },
+  {
+    "path": "src/platform/vnext/runtimeManifest.ts",
+    "bytes": 7618,
+    "sha256": "d2514252a5236f744af2539e6920cb395ce3041b72df4f4a91a8fc17ad3f23b0"
+  },
+  {
+    "path": "src/services/deviceRuntime.ts",
+    "bytes": 4099,
+    "sha256": "1e2f821c6a9bfeb4f2785bdcf38dccd6bc45a814c3cb2af4ecbb522eaffd9446"
+  },
+  {
+    "path": "src/services/myWork.ts",
+    "bytes": 2186,
+    "sha256": "e155ac73389edeb2fd7cc6fd3706ecdf17b211466913364770f734fe90cd27db"
+  }
+]

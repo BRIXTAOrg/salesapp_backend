@@ -103,15 +103,38 @@ app.get(
       service:
         "BRIXTA Responsibility Runtime",
       architecture:
-        "responsibility-crud-workflow",
+        "responsibility-kernel-workflow",
       primitiveVersion:
         PLATFORM_PRIMITIVES.version,
+      capabilities: {
+        publishedManifests: true,
+        kernelRuntime: true,
+        genericDataSources: true,
+        entityMemory: true,
+        deviceRuntime: true,
+        workflowRuntime: true,
+        legacyCrudCompatibility: true,
+      },
       endpoints: {
         auth:
           "/api/salesApp/auth/login",
         bootstrap:
           "/api/salesApp/bootstrap",
-        records:
+        syncState:
+          "/api/salesApp/sync/state",
+        runtime:
+          "/api/salesApp/responsibilities/:responsibilityKey/runtime",
+        kernelAction:
+          "/api/salesApp/responsibilities/:responsibilityKey/actions/:actionId",
+        dataSources:
+          "/api/salesApp/data-sources/:key",
+        memory:
+          "/api/salesApp/memory/:sourceKey/:entityId",
+        myWork:
+          "/api/salesApp/my-work",
+        devices:
+          "/api/salesApp/devices/register",
+        legacyRecords:
           "/api/salesApp/records/:responsibilityKey",
         workflow:
           "/api/salesApp/workflow/state",
@@ -123,21 +146,14 @@ app.get(
     }),
 );
 
-// Employee identity + generated workspace.
 setupAuthRoutes(app);
 setupMobileBootstrapRoutes(
   app,
 );
-
-// Generic CRUD + workflow runtime. This is the business API.
 setupMobilePlatformRoutes(
   app,
 );
-
-// Generic media primitive for photo/file/signature/audio/etc.
 setupUploadRoutes(app);
-
-// Admin control plane: employees, Responsibilities, Workflows, runtime.
 setupApplianceAdminRoutes(
   app,
 );
@@ -180,10 +196,19 @@ app.listen(
       ` Primitives: ${PLATFORM_PRIMITIVES.version}`,
     );
     console.log(
-      " Business routes: GENERIC CRUD ONLY",
+      " Published manifests: ENABLED",
+    );
+    console.log(
+      " Kernel v3+ runtime: ENABLED",
+    );
+    console.log(
+      " Generic Data Sources: ENABLED",
     );
     console.log(
       " Workflow runtime: ENABLED",
+    );
+    console.log(
+      " V2 CRUD compatibility: ENABLED",
     );
     console.log(
       "==============================================",
