@@ -383,13 +383,6 @@ async function latestResponsibilityRecord(
   return record ?? null;
 }
 
-function responsibilityInitialStatus(
-  config: ReturnType<typeof normalizeResponsibilityConfig>,
-) {
-  const value = config.app.config.initialState;
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function appActionVisibilityAllowed(
   action: ResponsibilityAppAction,
   latestStatus: string | null,
@@ -575,7 +568,7 @@ async function enforceAppAction(
   if (
     !appActionVisibilityAllowed(
       action,
-      latest?.status ?? responsibilityInitialStatus(input.config),
+      latest?.status ?? null,
       Boolean(latest),
     )
   ) {
