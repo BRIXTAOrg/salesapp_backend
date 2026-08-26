@@ -10,6 +10,7 @@ import {
 } from "@supabase/supabase-js";
 
 import multer from "multer";
+import ws from "ws";
 
 import {
   authenticateToken,
@@ -45,6 +46,11 @@ function storageClient() {
   return createClient(
     SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY,
+    {
+      realtime: {
+        transport: ws as any,
+      },
+    },
   );
 }
 
