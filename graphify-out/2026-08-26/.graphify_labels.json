@@ -1,0 +1,21 @@
+{
+  "0": "src/platform/recordEngine.ts",
+  "1": "schema.ts",
+  "2": "runtimeEngine.ts",
+  "3": "workflowEngine.ts",
+  "4": "package.json",
+  "5": "dataSourceRuntime.ts",
+  "6": "dependencies",
+  "7": "compilerOptions",
+  "8": "README.md",
+  "9": "semantic-runtime-v2-20260826-033804/src/platform/recordEngine.ts",
+  "10": "responsibility.ts",
+  "11": "src/admin/applianceWorkflows.ts",
+  "12": "inline-human-review-20260826-040158/src/admin/applianceWorkflows.ts",
+  "13": "cleanup_legacy_backend.py",
+  "14": "start.sh",
+  "15": "drizzle.config.ts",
+  "16": "upload.ts",
+  "17": "archived-responsibilities-20260826-004719/src/admin/applianceResponsibilities.ts",
+  "18": "responsibility-delete-20260826-003442/src/admin/applianceResponsibilities.ts"
+}

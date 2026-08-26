@@ -1,7 +1,8 @@
 # Graph Report - salesapp_backend  (2026-08-26)
 
 ## Corpus Check
-- cluster-only mode — file stats not available
+- 64 files · ~81,199 words
+- Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
 - 431 nodes · 1110 edges · 19 communities (17 shown, 2 thin omitted)
@@ -35,14 +36,14 @@
 ## God Nodes (most connected - your core abstractions)
 1. `AppDatabase` - 23 edges
 2. `authenticateToken()` - 19 edges
-3. `getResolvedCapabilitiesForUser()` - 17 edges
-4. `queryRuntimeDataSource()` - 17 edges
+3. `queryRuntimeDataSource()` - 17 edges
+4. `getResolvedCapabilitiesForUser()` - 17 edges
 5. `registerRuntimeRoutes()` - 16 edges
 6. `executeKernelAction()` - 16 edges
 7. `withTenantDb()` - 14 edges
-8. `registerDataRoutes()` - 13 edges
+8. `users` - 13 edges
 9. `mobileCapabilities` - 13 edges
-10. `users` - 13 edges
+10. `registerDataRoutes()` - 13 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `setupMobileBootstrapRoutes()` --indirect_call--> `authenticateToken()`  [INFERRED]
@@ -53,8 +54,8 @@
   src/mobile/runtimeRoutes.ts → src/middleware/auth.ts
 - `setupUploadRoutes()` --indirect_call--> `authenticateToken()`  [INFERRED]
   src/photoUpload/upload.ts → src/middleware/auth.ts
-- `authenticateToken()` --calls--> `verifyMobileToken()`  [EXTRACTED]
-  src/middleware/auth.ts → src/auth/jwt.ts
+- `setupApplianceAdminRoutes()` --calls--> `registerEmployeeAdminRoutes()`  [EXTRACTED]
+  src/admin/appliance.ts → src/admin/applianceEmployees.ts
 
 ## Import Cycles
 - None detected.
@@ -122,7 +123,7 @@ Cohesion: 0.83
 Nodes (3): normalizeKey(), objectValue(), registerResponsibilityAdminRoutes()
 
 ## Knowledge Gaps
-- **125 isolated node(s):** `AuthUserPayload`, `RecordEngineError`, `RecordEngineResult`, `RecordEngineSuccess`, `ResponsibilityAppAction` (+120 more)
+- **125 isolated node(s):** `CRUD_OPERATIONS`, `CreateVersionInput`, `RecordEngineError`, `RecordEngineSuccess`, `RecordEngineResult` (+120 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **2 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -137,7 +138,7 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.012) - this node is a cross-community bridge._
 - **Are the 9 inferred relationships involving `authenticateToken()` (e.g. with `setupMobileBootstrapRoutes()` and `setupMobileBootstrapRoutes()`) actually correct?**
   _`authenticateToken()` has 9 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `AuthUserPayload`, `RecordEngineError`, `RecordEngineResult` to the rest of the system?**
+- **What connects `CRUD_OPERATIONS`, `CreateVersionInput`, `RecordEngineError` to the rest of the system?**
   _125 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `src/platform/recordEngine.ts` be split into smaller, more focused modules?**
   _Cohesion score 0.11949685534591195 - nodes in this community are weakly interconnected._
