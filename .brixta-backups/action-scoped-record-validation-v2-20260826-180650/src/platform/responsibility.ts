@@ -530,20 +530,8 @@ export function validateResponsibilityPayload(
   config: ResponsibilityConfig,
   payload: Record<string, unknown>,
   mode: "create" | "update",
-  options: {
-    /**
-     * BRIXTA_ACTION_SCOPED_REQUIRED_VALIDATION
-     *
-     * Multi-action Responsibilities validate required fields per app action.
-     * Legacy/simple Responsibilities with no app actions can still enforce
-     * the whole definition's required fields.
-     */
-    enforceRequired?: boolean;
-  } = {},
-
 ) {
   const errors: string[] = [];
-  const enforceRequired = options.enforceRequired ?? true;
   const fieldMap = new Map(
     config.input.fields.map(
       (field) => [
@@ -562,7 +550,6 @@ export function validateResponsibilityPayload(
 
     if (
       mode === "create" &&
-      enforceRequired &&
       field.required &&
       !hasValue
     ) {

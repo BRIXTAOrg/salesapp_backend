@@ -1004,14 +1004,6 @@ export async function createRecord(
       resolved.config,
       payload,
       "create",
-      {
-        // BRIXTA_ACTION_SCOPED_VALIDATION_CALL
-        // With app actions, enforceAppAction() owns required-field validation.
-        // With no app actions, preserve the legacy whole-form behavior.
-        enforceRequired:
-          resolved.config.app.actions.length === 0,
-      },
-
     );
 
   if (validationErrors.length) {
