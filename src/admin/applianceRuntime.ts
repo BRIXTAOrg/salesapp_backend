@@ -7,8 +7,12 @@ import {
   asc,
   desc,
   eq,
+  gte,
+  ilike,
   inArray,
+  lt,
   ne,
+  or,
   sql,
   type SQL,
 } from "drizzle-orm";
@@ -44,6 +48,14 @@ import {
 import {
   userCanApprovePolicy,
 } from "../services/approvalPolicyResolver";
+
+import {
+  executeKernelAction,
+} from "../platform/kernel/runtimeEngine";
+
+import {
+  sendResult,
+} from "../mobile/http";
 
 function objectValue(
   value: unknown,
@@ -151,6 +163,60 @@ export function registerRuntimeAdminRoutes(
               "deleted",
             ),
           );
+        }
+
+        // Free-text search across employee name/login and the record's
+        // own JSON payload. Cast payload to text for a blunt but
+        // effective ILIKE match -- avoids fetching everything and
+        // filtering in Node, which doesn't scale past a few hundred rows.
+        const search =
+          typeof req.query.search === "string"
+            ? req.query.search.trim()
+            : null;
+
+        if (search) {
+          const pattern = `%${search}%`;
+          conditions.push(
+            or(
+              ilike(users.displayName, pattern),
+              ilike(users.salesmanLoginId, pattern),
+              ilike(
+                sql`${dynamicSubmissions.payload}::text`,
+                pattern,
+              ),
+            )!,
+          );
+        }
+
+        // Date range, inclusive. endDate is bumped to the start of the
+        // next day so "endDate=2026-08-27" includes all of that day
+        // rather than cutting off at midnight.
+        const startDate =
+          typeof req.query.startDate === "string"
+            ? req.query.startDate.trim()
+            : null;
+        const endDate =
+          typeof req.query.endDate === "string"
+            ? req.query.endDate.trim()
+            : null;
+
+        if (startDate) {
+          const parsed = new Date(`${startDate}T00:00:00.000Z`);
+          if (!Number.isNaN(parsed.getTime())) {
+            conditions.push(
+              gte(dynamicSubmissions.createdAt, parsed),
+            );
+          }
+        }
+
+        if (endDate) {
+          const parsed = new Date(`${endDate}T00:00:00.000Z`);
+          if (!Number.isNaN(parsed.getTime())) {
+            parsed.setUTCDate(parsed.getUTCDate() + 1);
+            conditions.push(
+              lt(dynamicSubmissions.createdAt, parsed),
+            );
+          }
         }
 
         const limit = Math.min(
@@ -411,6 +477,60 @@ export function registerRuntimeAdminRoutes(
           workflowInstanceId:
             result.workflowInstanceId,
         });
+      },
+    ),
+  );
+
+  /**
+   * Kernel-native action execution for admins/managers.
+   *
+   * Some Responsibilities (e.g. Leave, via responsibility-kernel-catalog's
+   * addActionRule) define their own self-contained approve/reject actions
+   * with real state-changing rules -- but until this route existed there
+   * was no way to actually invoke them from the dashboard. This reuses
+   * the exact same executeKernelAction runtime the mobile app calls at
+   * POST /api/salesApp/responsibilities/:key/actions/:actionId, just
+   * authenticated as the dashboard admin instead of the field employee.
+   */
+  router.post(
+    "/records/:responsibilityKey/:recordId/actions/:actionId",
+    withAdminTenantDb<AdminRequest>(
+      async (
+        req,
+        res,
+        db,
+      ) => {
+        const actorUserId =
+          req.adminActor?.userId ??
+          null;
+
+        if (!actorUserId) {
+          return res
+            .status(403)
+            .json({
+              success: false,
+              error:
+                "A concrete dashboard user is required to run this action.",
+            });
+        }
+
+        const result = await executeKernelAction(
+          db,
+          {
+            userId: actorUserId,
+            responsibilityKey:
+              String(req.params.responsibilityKey),
+            actionId:
+              String(req.params.actionId),
+            recordId:
+              String(req.params.recordId ?? "").trim() ||
+              null,
+            payload:
+              req.body?.payload ?? {},
+          },
+        );
+
+        return sendResult(res, result);
       },
     ),
   );
