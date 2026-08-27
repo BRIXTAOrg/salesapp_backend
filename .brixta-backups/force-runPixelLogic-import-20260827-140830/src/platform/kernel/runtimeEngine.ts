@@ -1,4 +1,3 @@
-import { runPixelLogic } from "../pixelLogic/runtime";
 import crypto from "node:crypto";
 
 import {
@@ -47,6 +46,10 @@ import {
 import {
   getPublishedRuntimeManifest,
 } from "../vnext/runtimeManifest";
+
+import {
+  runPixelLogic,
+} from "../pixelLogic/runtime";
 
 import {
   normalizePixelLogicProgram,

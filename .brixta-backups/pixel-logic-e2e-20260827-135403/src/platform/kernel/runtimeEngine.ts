@@ -1,4 +1,3 @@
-import { runPixelLogic } from "../pixelLogic/runtime";
 import crypto from "node:crypto";
 
 import {
@@ -47,6 +46,10 @@ import {
 import {
   getPublishedRuntimeManifest,
 } from "../vnext/runtimeManifest";
+
+import {
+  runPixelLogic,
+} from "../pixelLogic/runtime";
 
 import {
   normalizePixelLogicProgram,
@@ -149,6 +152,36 @@ function pixelProgramFromPublishedManifest(
   }
 
   return program;
+}
+
+function pixelEffectToKernelEffect(
+  effect: PixelLogicEffect,
+): KernelEffect {
+  return {
+    id:
+      `pixel:${effect.nodeId}`,
+
+    kind:
+      effect.kind,
+
+    targetKey:
+      effect.targetKey,
+
+    actorId:
+      effect.actorId,
+
+    value:
+      effect.value === undefined
+        ? undefined
+        : {
+            kind: "literal",
+            value: effect.value,
+          },
+
+    config: {
+      ...effect.config,
+    },
+  };
 }
 
 function pixelEffectToKernelEffect(

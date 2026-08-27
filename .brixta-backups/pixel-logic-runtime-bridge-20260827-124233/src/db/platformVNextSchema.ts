@@ -25,14 +25,6 @@ import {
  * backend read/write the exact tables the CMS already provisions.
  */
 
-export const platformMeta = pgTable("platform_meta", {
-  key: varchar("key", { length: 120 }).primaryKey(),
-  value: jsonb("value").$type<unknown>().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
-
 export type EntityFieldDefinition = {
   key: string;
   label: string;

@@ -1,4 +1,3 @@
-import { runPixelLogic } from "../pixelLogic/runtime";
 import crypto from "node:crypto";
 
 import {
@@ -49,9 +48,15 @@ import {
 } from "../vnext/runtimeManifest";
 
 import {
-  normalizePixelLogicProgram,
-  PIXEL_LOGIC_METADATA_KEY,
-  type PixelLogicEffect,
+  getPublishedPixelLogic,
+} from "../pixelLogic/host";
+
+import {
+  runPixelLogic,
+} from "../pixelLogic/runtime";
+
+import type {
+  PixelLogicEffect,
 } from "../pixelLogic/types";
 
 import {
@@ -106,49 +111,6 @@ function arrayValue(
   return Array.isArray(value)
     ? value
     : [];
-}
-
-
-/*
- * BRIXTA_PIXEL_LOGIC_MANIFEST_HELPERS_V2
- *
- * Pixel Logic is published as part of the same immutable
- * Responsibility manifest consumed by the Kernel runtime.
- */
-function pixelProgramFromPublishedManifest(
-  manifest: Record<string, unknown>,
-  fallbackName: string,
-) {
-  const extension =
-    objectValue(
-      manifest.extension,
-    );
-
-  const metadata =
-    objectValue(
-      extension.metadata,
-    );
-
-  const rawProgram =
-    metadata[
-      PIXEL_LOGIC_METADATA_KEY
-    ];
-
-  if (!rawProgram) {
-    return null;
-  }
-
-  const program =
-    normalizePixelLogicProgram(
-      rawProgram,
-      fallbackName,
-    );
-
-  if (!program.enabled) {
-    return null;
-  }
-
-  return program;
 }
 
 function pixelEffectToKernelEffect(
@@ -889,14 +851,6 @@ async function applyEffect(
 
       result.userIds = userIds;
       result.channel = effect.config.channel ?? "app_inbox";
-
-      // BRIXTA_NOTIFY_ACTOR_MESSAGE_V1
-      result.message = String(
-        effect.config.message ??
-        effect.config.title ??
-        "New notification",
-      );
-
       break;
     }
 
@@ -1369,26 +1323,25 @@ export async function executeKernelAction(
   world.context.record = record;
 
   /*
-   * BRIXTA_PIXEL_LOGIC_MANIFEST_RUNTIME_V2
+   * BRIXTA_PIXEL_LOGIC_RUNTIME_BRIDGE_V1
    *
-   * CANONICAL EXECUTION:
-   *
-   * Responsibility Action
-   *        ↓
-   * executeKernelAction()
-   *        ↓
-   * Published Manifest
+   * Responsibility action
    *        ↓
    * Pixel Logic graph
    *        ↓
    * Pixel effects
    *        ↓
-   * existing Kernel applyEffect()
+   * Existing Kernel applyEffect()
    */
   const pixelProgram =
-    pixelProgramFromPublishedManifest(
-      resolved.published.manifest,
-      `${resolved.responsibility.title} Logic`,
+    await getPublishedPixelLogic(
+      db,
+      {
+        employeeId:
+          input.userId,
+        responsibilityId:
+          resolved.responsibility.id,
+      },
     );
 
   if (pixelProgram) {
@@ -1409,28 +1362,19 @@ export async function executeKernelAction(
           event: {
             name:
               "responsibility.action",
-
             actionId:
               possibility.action.id,
-
-            at:
-              new Date().toISOString(),
-
             payload: {
               record,
-
               captures:
                 submittedPayload,
-
               responsibilityId:
                 resolved.responsibility.id,
-
               responsibilityKey:
                 resolved.responsibility.key,
-
-              actionId:
-                possibility.action.id,
             },
+            at:
+              new Date().toISOString(),
           },
 
           values: {
@@ -1481,24 +1425,17 @@ export async function executeKernelAction(
           {
             effect:
               kernelEffect,
-
             kernel:
               resolved.kernel,
-
             world,
-
             payload:
               nextPayload,
-
             state:
               nextState,
-
             responsibilityId:
               resolved.responsibility.id,
-
             responsibilityKey:
               resolved.responsibility.key,
-
             recordId:
               record.id,
           },
@@ -1514,9 +1451,26 @@ export async function executeKernelAction(
         nodeId:
           pixelEffect.nodeId,
 
+        ...(pixelEffect.kind ===
+          "notify_actor"
+          ? {
+              message:
+                String(
+                  pixelEffect.config.message ??
+                  pixelEffect.value ??
+                  "",
+                ),
+            }
+          : {}),
+
         ...applied,
       });
     }
+
+    Object.assign(
+      world.state,
+      nextState,
+    );
 
     await db
       .insert(
@@ -1536,9 +1490,6 @@ export async function executeKernelAction(
           record.id,
 
         payload: {
-          responsibilityId:
-            resolved.responsibility.id,
-
           responsibilityKey:
             resolved.responsibility.key,
 
@@ -1556,7 +1507,6 @@ export async function executeKernelAction(
               (effect) => ({
                 nodeId:
                   effect.nodeId,
-
                 kind:
                   effect.kind,
               }),

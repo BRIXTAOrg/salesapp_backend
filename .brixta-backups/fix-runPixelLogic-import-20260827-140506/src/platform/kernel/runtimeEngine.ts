@@ -1,4 +1,3 @@
-import { runPixelLogic } from "../pixelLogic/runtime";
 import crypto from "node:crypto";
 
 import {
