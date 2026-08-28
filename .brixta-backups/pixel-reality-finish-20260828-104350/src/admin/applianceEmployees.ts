@@ -5,7 +5,6 @@ import type {
 import bcrypt from "bcryptjs";
 
 import {
-  and,
   asc,
   eq,
   inArray,
@@ -20,7 +19,6 @@ import {
 } from "../db/schema";
 
 import {
-  capabilityAssignmentRules,
   employeeRuntimeState,
 } from "../db/applianceSchema";
 
@@ -40,13 +38,6 @@ import {
 import {
   writeAudit,
 } from "../services/audit";
-
-import {
-  getReportingSnapshot,
-  refreshReportingCaches,
-  resolveReportingManager,
-  saveReportingPolicy,
-} from "../services/reportingResolver";
 
 function normalizeIds(
   raw: unknown,
@@ -130,126 +121,6 @@ async function validateRoleIds(
       "One or more Role IDs are invalid.",
     );
   }
-}
-
-function objectValue(
-  value: unknown,
-): Record<string, unknown> {
-  return value &&
-    typeof value === "object" &&
-    !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {};
-}
-
-function normalizeSurfaces(
-  value: unknown,
-) {
-  return Array.isArray(value)
-    ? [
-        ...new Set(
-          value
-            .map(String)
-            .filter(
-              (surface) =>
-                surface === "app" ||
-                surface === "dashboard",
-            ),
-        ),
-      ]
-    : [];
-}
-
-function normalizeParticipantGrants(
-  value: unknown,
-) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  const result = new Map<
-    string,
-    {
-      responsibilityId: number;
-      actorId: string;
-      surfaces: string[];
-    }
-  >();
-
-  for (const raw of value) {
-    const item =
-      objectValue(raw);
-
-    const responsibilityId =
-      Number(
-        item.responsibilityId,
-      );
-
-    const actorId =
-      String(
-        item.actorId ?? "",
-      ).trim();
-
-    const surfaces =
-      normalizeSurfaces(
-        item.surfaces,
-      );
-
-    if (
-      !Number.isInteger(
-        responsibilityId,
-      ) ||
-      responsibilityId <= 0 ||
-      !actorId ||
-      surfaces.length === 0
-    ) {
-      continue;
-    }
-
-    result.set(
-      `${responsibilityId}:${actorId}`,
-      {
-        responsibilityId,
-        actorId,
-        surfaces,
-      },
-    );
-  }
-
-  return [...result.values()];
-}
-
-function pixelRealityActors(
-  config: unknown,
-) {
-  const root =
-    objectValue(config);
-
-  const rawReality =
-    root.pixelReality ??
-    objectValue(
-      root.raw,
-    ).pixelReality;
-
-  const reality =
-    objectValue(rawReality);
-
-  return Array.isArray(
-    reality.actors,
-  )
-    ? reality.actors
-        .map(objectValue)
-        .filter(
-          (actor) =>
-            typeof actor.id ===
-              "string" &&
-            Boolean(
-              String(
-                actor.id,
-              ).trim(),
-            ),
-        )
-    : [];
 }
 
 export function registerEmployeeAdminRoutes(
@@ -371,140 +242,17 @@ export function registerEmployeeAdminRoutes(
           );
         }
 
-        const reportingRows =
-          await Promise.all(
-            employees.map(
-              async (
-                employee,
-              ) => ({
-                userId:
-                  employee.id,
-
-                resolution:
-                  await resolveReportingManager(
-                    db,
-                    employee.id,
-                  ),
-              }),
-            ),
-          );
-
-        const reportingMap =
-          new Map(
-            reportingRows.map(
-              (item) => [
-                item.userId,
-                item.resolution,
-              ],
-            ),
-          );
-
-        const directReportCounts =
-          new Map<number, number>();
-
-        for (
-          const item of
-          reportingRows
-        ) {
-          if (
-            item.resolution
-              .status ===
-              "resolved" &&
-            item.resolution
-              .managerId
-          ) {
-            directReportCounts.set(
-              item.resolution
-                .managerId,
-
-              (
-                directReportCounts.get(
-                  item.resolution
-                    .managerId,
-                ) ?? 0
-              ) + 1,
-            );
-          }
-        }
-
-        const names =
-          new Map(
-            employees.map(
-              (employee) => [
-                employee.id,
-                employee.name ??
-                  employee.employeeCode ??
-                  `Employee ${employee.id}`,
-              ],
-            ),
-          );
-
         return res.json({
           success: true,
-
           employees:
             employees.map(
-              (employee) => {
-                const reporting =
-                  reportingMap.get(
+              (employee) => ({
+                ...employee,
+                directResponsibilityCount:
+                  counts.get(
                     employee.id,
-                  );
-
-                const managerId =
-                  reporting
-                    ?.status ===
-                    "resolved"
-                    ? reporting.managerId
-                    : null;
-
-                return {
-                  ...employee,
-
-                  reportsToId:
-                    managerId,
-
-                  reportingPolicy:
-                    reporting
-                      ?.policy ?? {
-                        version: 1,
-                        mode: "unset",
-                      },
-
-                  reportingMode:
-                    reporting
-                      ?.policy.mode ??
-                    "unset",
-
-                  reportingStatus:
-                    reporting
-                      ?.status ??
-                    "unset",
-
-                  reportingCandidateCount:
-                    reporting
-                      ?.candidateIds
-                      .length ??
-                    0,
-
-                  reportingManagerName:
-                    managerId
-                      ? names.get(
-                          managerId,
-                        ) ??
-                        null
-                      : null,
-
-                  directReportCount:
-                    directReportCounts.get(
-                      employee.id,
-                    ) ?? 0,
-
-                  directResponsibilityCount:
-                    counts.get(
-                      employee.id,
-                    ) ?? 0,
-                };
-              },
+                  ) ?? 0,
+              }),
             ),
         });
       },
@@ -619,12 +367,6 @@ export function registerEmployeeAdminRoutes(
             .limit(1),
         ]);
 
-        const reporting =
-          await getReportingSnapshot(
-            db,
-            userId,
-          );
-
         return res.json({
           success: true,
           employee: {
@@ -653,28 +395,7 @@ export function registerEmployeeAdminRoutes(
             zone:
               employee.zone,
             reportsToId:
-              reporting
-                .resolution
-                .managerId,
-
-            reportingMode:
-              reporting
-                .policy
-                .mode,
-
-            reportingStatus:
-              reporting
-                .resolution
-                .status,
-
-            reportingManagerName:
-              reporting
-                .manager
-                ?.name ??
-              reporting
-                .manager
-                ?.employeeCode ??
-              null,
+              employee.reportsToId,
             status:
               employee.status,
             mobileAccess:
@@ -694,183 +415,7 @@ export function registerEmployeeAdminRoutes(
           runtime:
             runtimeRows[0] ??
             null,
-
-          reporting,
         });
-      },
-    ),
-  );
-
-  router.get(
-    "/employees/:id/reporting-policy",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(
-            req.params.id,
-          );
-
-        if (
-          !Number.isInteger(
-            userId,
-          ) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        return res.json({
-          success: true,
-          ...await getReportingSnapshot(
-            db,
-            userId,
-          ),
-        });
-      },
-    ),
-  );
-
-  router.post(
-    "/employees/:id/reporting-policy/preview",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(
-            req.params.id,
-          );
-
-        if (
-          !Number.isInteger(
-            userId,
-          ) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        return res.json({
-          success: true,
-          ...await getReportingSnapshot(
-            db,
-            userId,
-            req.body
-              ?.reportingPolicy ??
-            req.body
-              ?.policy,
-          ),
-        });
-      },
-    ),
-  );
-
-  router.put(
-    "/employees/:id/reporting-policy",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(
-            req.params.id,
-          );
-
-        if (
-          !Number.isInteger(
-            userId,
-          ) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        try {
-          const reporting =
-            await saveReportingPolicy(
-              db,
-              {
-                userId,
-
-                policy:
-                  req.body
-                    ?.reportingPolicy ??
-                  req.body
-                    ?.policy,
-
-                actorUserId:
-                  req.adminActor
-                    ?.userId,
-              },
-            );
-
-          await refreshReportingCaches(
-            db,
-          );
-
-          await writeAudit(
-            db,
-            {
-              actorUserId:
-                req.adminActor
-                  ?.userId,
-
-              action:
-                "employee.reporting_policy_update",
-
-              entityType:
-                "employee",
-
-              entityId:
-                userId,
-
-              afterState:
-                reporting,
-            },
-          );
-
-          return res.json({
-            success: true,
-            ...reporting,
-          });
-        } catch (
-          error: any
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                error?.message ??
-                "Unable to save reporting policy.",
-            });
-        }
       },
     ),
   );
@@ -1056,35 +601,6 @@ export function registerEmployeeAdminRoutes(
               );
           }
 
-          // BRIXTA_REPORTING_CREATE
-          let reporting = null;
-
-          if (
-            "reportingPolicy" in
-            (req.body ?? {})
-          ) {
-            reporting =
-              await saveReportingPolicy(
-                db,
-                {
-                  userId:
-                    created.id,
-
-                  policy:
-                    req.body
-                      .reportingPolicy,
-
-                  actorUserId:
-                    req.adminActor
-                      ?.userId,
-                },
-              );
-          }
-
-          await refreshReportingCaches(
-            db,
-          );
-
           await writeAudit(
             db,
             {
@@ -1256,60 +772,6 @@ export function registerEmployeeAdminRoutes(
           )
           .returning();
 
-        // BRIXTA_REPORTING_PROFILE_UPDATE
-        let reporting =
-          await getReportingSnapshot(
-            db,
-            userId,
-          );
-
-        if (
-          "reportingPolicy" in
-          (req.body ?? {})
-        ) {
-          reporting =
-            await saveReportingPolicy(
-              db,
-              {
-                userId,
-
-                policy:
-                  req.body
-                    .reportingPolicy,
-
-                actorUserId:
-                  req.adminActor
-                    ?.userId,
-              },
-            );
-        }
-
-        /*
-         * Department / area / zone changes may affect
-         * Role+scope reporting policies elsewhere.
-         */
-        await refreshReportingCaches(
-          db,
-        );
-
-        reporting =
-          await getReportingSnapshot(
-            db,
-            userId,
-          );
-
-        const [fresh] =
-          await db
-            .select()
-            .from(users)
-            .where(
-              eq(
-                users.id,
-                userId,
-              ),
-            )
-            .limit(1);
-
         await writeAudit(
           db,
           {
@@ -1323,19 +785,15 @@ export function registerEmployeeAdminRoutes(
               userId,
             beforeState:
               before,
-            afterState: {
-              ...(fresh ?? updated),
-              reporting,
-            },
+            afterState:
+              updated,
           },
         );
 
         return res.json({
           success: true,
           employee:
-            fresh ?? updated,
-
-          reporting,
+            updated,
         });
       },
     ),
@@ -1401,11 +859,6 @@ export function registerEmployeeAdminRoutes(
                 "Employee not found.",
             });
         }
-
-        // BRIXTA_REPORTING_STATUS_REFRESH
-        await refreshReportingCaches(
-          db,
-        );
 
         await writeAudit(
           db,
@@ -1504,358 +957,6 @@ export function registerEmployeeAdminRoutes(
 
         return res.json({
           success: true,
-        });
-      },
-    ),
-  );
-
-  /*
-   * BRIXTA_PIXEL_REALITY_PARTICIPANT_GRANTS
-   *
-   * These are human overrides for Responsibility actors.
-   * They do NOT assign the whole Responsibility.
-   */
-  router.get(
-    "/employees/:id/participant-grants",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(req.params.id);
-
-        if (
-          !Number.isInteger(userId) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        const rows =
-          await db
-            .select({
-              id:
-                capabilityAssignmentRules.id,
-              capabilityId:
-                capabilityAssignmentRules.capabilityId,
-              config:
-                capabilityAssignmentRules.config,
-            })
-            .from(
-              capabilityAssignmentRules,
-            )
-            .where(
-              and(
-                eq(
-                  capabilityAssignmentRules.subjectType,
-                  "user",
-                ),
-                eq(
-                  capabilityAssignmentRules.subjectValue,
-                  String(userId),
-                ),
-                eq(
-                  capabilityAssignmentRules.enabled,
-                  true,
-                ),
-              ),
-            );
-
-        const participantGrants =
-          rows.flatMap(
-            (row) => {
-              const config =
-                objectValue(
-                  row.config,
-                );
-
-              if (
-                config.kind !==
-                "pixel_reality_participant"
-              ) {
-                return [];
-              }
-
-              return [{
-                ruleId:
-                  row.id,
-                responsibilityId:
-                  row.capabilityId,
-                actorId:
-                  String(
-                    config.actorId ??
-                    "",
-                  ),
-                surfaces:
-                  normalizeSurfaces(
-                    config.surfaces,
-                  ),
-              }];
-            },
-          );
-
-        return res.json({
-          success: true,
-          participantGrants,
-        });
-      },
-    ),
-  );
-
-  router.put(
-    "/employees/:id/participant-grants",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(req.params.id);
-
-        if (
-          !Number.isInteger(userId) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        const grants =
-          normalizeParticipantGrants(
-            req.body
-              ?.participantGrants ??
-            req.body?.grants,
-          );
-
-        const [
-          employee,
-        ] =
-          await db
-            .select({
-              id: users.id,
-            })
-            .from(users)
-            .where(
-              eq(
-                users.id,
-                userId,
-              ),
-            )
-            .limit(1);
-
-        if (!employee) {
-          return res
-            .status(404)
-            .json({
-              success: false,
-              error:
-                "Employee not found.",
-            });
-        }
-
-        const responsibilityIds =
-          [
-            ...new Set(
-              grants.map(
-                (grant) =>
-                  grant.responsibilityId,
-              ),
-            ),
-          ];
-
-        await validateResponsibilityIds(
-          db,
-          responsibilityIds,
-        );
-
-        const responsibilityRows =
-          responsibilityIds.length
-            ? await db
-                .select({
-                  id:
-                    mobileCapabilities.id,
-                  config:
-                    mobileCapabilities.config,
-                })
-                .from(
-                  mobileCapabilities,
-                )
-                .where(
-                  inArray(
-                    mobileCapabilities.id,
-                    responsibilityIds,
-                  ),
-                )
-            : [];
-
-        const responsibilityMap =
-          new Map(
-            responsibilityRows.map(
-              (row) => [
-                row.id,
-                row,
-              ],
-            ),
-          );
-
-        for (
-          const grant of grants
-        ) {
-          const responsibility =
-            responsibilityMap.get(
-              grant.responsibilityId,
-            );
-
-          const actors =
-            pixelRealityActors(
-              responsibility?.config,
-            );
-
-          if (
-            !actors.some(
-              (actor) =>
-                String(
-                  actor.id,
-                ) ===
-                grant.actorId,
-            )
-          ) {
-            return res
-              .status(400)
-              .json({
-                success: false,
-                error:
-                  `Actor "${grant.actorId}" is not declared by Responsibility ${grant.responsibilityId}.`,
-              });
-          }
-        }
-
-        const existing =
-          await db
-            .select({
-              id:
-                capabilityAssignmentRules.id,
-              config:
-                capabilityAssignmentRules.config,
-            })
-            .from(
-              capabilityAssignmentRules,
-            )
-            .where(
-              and(
-                eq(
-                  capabilityAssignmentRules.subjectType,
-                  "user",
-                ),
-                eq(
-                  capabilityAssignmentRules.subjectValue,
-                  String(userId),
-                ),
-              ),
-            );
-
-        const participantRuleIds =
-          existing
-            .filter(
-              (row) =>
-                objectValue(
-                  row.config,
-                ).kind ===
-                "pixel_reality_participant",
-            )
-            .map(
-              (row) => row.id,
-            );
-
-        if (
-          participantRuleIds.length
-        ) {
-          await db
-            .delete(
-              capabilityAssignmentRules,
-            )
-            .where(
-              inArray(
-                capabilityAssignmentRules.id,
-                participantRuleIds,
-              ),
-            );
-        }
-
-        if (grants.length) {
-          await db
-            .insert(
-              capabilityAssignmentRules,
-            )
-            .values(
-              grants.map(
-                (grant) => ({
-                  capabilityId:
-                    grant.responsibilityId,
-                  subjectType:
-                    "user",
-                  subjectValue:
-                    String(userId),
-                  effect:
-                    "allow",
-                  priority:
-                    1000,
-                  enabled:
-                    true,
-                  config: {
-                    kind:
-                      "pixel_reality_participant",
-                    actorId:
-                      grant.actorId,
-                    surfaces:
-                      grant.surfaces,
-                  },
-                  createdByUserId:
-                    req.adminActor
-                      ?.userId ??
-                    null,
-                }),
-              ),
-            );
-        }
-
-        await writeAudit(
-          db,
-          {
-            actorUserId:
-              req.adminActor
-                ?.userId,
-            action:
-              "employee.pixel_reality_participants_replace",
-            entityType:
-              "employee",
-            entityId:
-              userId,
-            afterState: {
-              participantGrants:
-                grants,
-            },
-          },
-        );
-
-        return res.json({
-          success: true,
-          participantGrants:
-            grants,
         });
       },
     ),
@@ -2087,11 +1188,6 @@ export function registerEmployeeAdminRoutes(
                 ),
               );
           }
-
-          // BRIXTA_REPORTING_ROLE_REFRESH
-          await refreshReportingCaches(
-            db,
-          );
 
           await writeAudit(
             db,

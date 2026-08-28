@@ -14,14 +14,6 @@ import {
   approvalPolicyActors,
 } from "../db/workflowSchema";
 
-import {
-  resolveReportingManager,
-} from "./reportingResolver";
-
-import {
-  resolveDepartmentAuthority,
-} from "./departments";
-
 type PolicyResolution = {
   policyId: number;
   mode: string;
@@ -203,57 +195,14 @@ export async function resolveApprovalPolicy(
     }
 
     if (
-      actor.subjectType === "reports_to"
+      actor.subjectType === "reports_to" &&
+      subject.reportsToId
     ) {
-      const reporting =
-        await resolveReportingManager(
-          db,
-          input.subjectUserId,
-        );
-
-      if (
-        reporting.status ===
-          "resolved" &&
-        reporting.managerId
-      ) {
-        candidates.add(
-          reporting.managerId,
-        );
-      }
+      candidates.add(subject.reportsToId);
     }
 
     const config =
       objectValue(actor.scopeConfig);
-
-    if (
-      actor.subjectType ===
-      "department"
-    ) {
-      const departmentId =
-        typeof config.departmentId ===
-          "string"
-          ? config.departmentId
-              .trim()
-          : "";
-
-      if (departmentId) {
-        const resolution =
-          await resolveDepartmentAuthority(
-            db,
-            departmentId,
-          );
-
-        for (
-          const userId of
-          resolution
-            .eligibleUserIds
-        ) {
-          candidates.add(
-            userId,
-          );
-        }
-      }
-    }
 
     if (
       actor.subjectType === "designation"
@@ -334,14 +283,6 @@ export async function resolveApprovalPolicy(
       }
     }
   }
-
-  /*
-   * A requester never approves their own request through the
-   * simple review gate. Explicit advanced Pixel logic remains separate.
-   */
-  candidates.delete(
-    input.subjectUserId,
-  );
 
   return {
     policyId: policy.id,

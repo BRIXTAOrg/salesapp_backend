@@ -46,11 +46,6 @@ export type ResponsibilityConfig = {
     config: Record<string, unknown>;
   };
   crud: Record<CrudOperation, boolean>;
-  surfaces: {
-    version: number;
-    app: Record<string, unknown>[];
-    dashboard: Record<string, unknown>[];
-  };
   raw: Record<string, unknown>;
 };
 
@@ -169,10 +164,6 @@ export function normalizeResponsibilityConfig(
     raw.crud,
   );
 
-  const surfacesRaw = objectValue(
-    raw.surfaces,
-  );
-
   const rawFields =
     Array.isArray(inputRaw.fields)
       ? inputRaw.fields
@@ -248,42 +239,6 @@ export function normalizeResponsibilityConfig(
         objectValue(
           outputRaw.config,
         ),
-    },
-
-    surfaces: {
-      version:
-        Number(
-          surfacesRaw.version ??
-          1,
-        ) || 1,
-
-      app:
-        Array.isArray(
-          surfacesRaw.app,
-        )
-          ? surfacesRaw.app
-              .map(objectValue)
-              .filter(
-                (item) =>
-                  Object.keys(
-                    item,
-                  ).length > 0,
-              )
-          : [],
-
-      dashboard:
-        Array.isArray(
-          surfacesRaw.dashboard,
-        )
-          ? surfacesRaw.dashboard
-              .map(objectValue)
-              .filter(
-                (item) =>
-                  Object.keys(
-                    item,
-                  ).length > 0,
-              )
-          : [],
     },
 
     crud: {

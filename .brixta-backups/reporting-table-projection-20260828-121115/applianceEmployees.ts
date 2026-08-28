@@ -463,13 +463,6 @@ export function registerEmployeeAdminRoutes(
                   reportsToId:
                     managerId,
 
-                  reportingPolicy:
-                    reporting
-                      ?.policy ?? {
-                        version: 1,
-                        mode: "unset",
-                      },
-
                   reportingMode:
                     reporting
                       ?.policy.mode ??

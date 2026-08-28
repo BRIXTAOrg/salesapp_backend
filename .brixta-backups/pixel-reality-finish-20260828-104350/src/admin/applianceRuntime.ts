@@ -51,7 +51,6 @@ import {
 
 import {
   executeKernelAction,
-  getKernelRuntime,
 } from "../platform/kernel/runtimeEngine";
 
 import {
@@ -493,57 +492,6 @@ export function registerRuntimeAdminRoutes(
    * POST /api/salesApp/responsibilities/:key/actions/:actionId, just
    * authenticated as the dashboard admin instead of the field employee.
    */
-  /*
-   * Actor-projected runtime for Dashboard records.
-   * Same Kernel as Flutter; different authenticated surface.
-   */
-  router.get(
-    "/records/:responsibilityKey/:recordId/runtime",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const actorUserId =
-          req.adminActor
-            ?.userId ??
-          null;
-
-        if (!actorUserId) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              error:
-                "A concrete dashboard user is required.",
-            });
-        }
-
-        return sendResult(
-          res,
-          await getKernelRuntime(
-            db,
-            {
-              userId:
-                actorUserId,
-              responsibilityKey:
-                String(
-                  req.params
-                    .responsibilityKey,
-                ),
-              recordId:
-                String(
-                  req.params
-                    .recordId,
-                ),
-            },
-          ),
-        );
-      },
-    ),
-  );
-
   router.post(
     "/records/:responsibilityKey/:recordId/actions/:actionId",
     withAdminTenantDb<AdminRequest>(

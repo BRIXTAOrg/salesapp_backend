@@ -20,10 +20,6 @@ import {
 } from "./applianceResponsibilities";
 
 import {
-  registerDepartmentAdminRoutes,
-} from "./applianceDepartments";
-
-import {
   registerWorkflowAdminRoutes,
 } from "./applianceWorkflows";
 
@@ -56,10 +52,6 @@ export default function setupApplianceAdminRoutes(
   );
 
   registerEmployeeAdminRoutes(
-    router,
-  );
-
-  registerDepartmentAdminRoutes(
     router,
   );
 

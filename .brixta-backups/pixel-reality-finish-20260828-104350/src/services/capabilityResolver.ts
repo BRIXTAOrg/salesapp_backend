@@ -29,16 +29,6 @@ type EmployeeIdentity = {
   roleLabels: string[];
 };
 
-function assignmentRuleConfig(
-  value: unknown,
-): Record<string, unknown> {
-  return value &&
-    typeof value === "object" &&
-    !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : {};
-}
-
 export type ResolvedCapability = {
   id: number;
   key: string;
@@ -264,8 +254,6 @@ export async function getResolvedCapabilitiesForUser(
           capabilityAssignmentRules.effect,
         priority:
           capabilityAssignmentRules.priority,
-        ruleConfig:
-          capabilityAssignmentRules.config,
         capabilityId:
           mobileCapabilities.id,
         key:
@@ -347,17 +335,6 @@ export async function getResolvedCapabilitiesForUser(
   >();
 
   for (const rule of ruleRows) {
-    // BRIXTA_PIXEL_REALITY_PARTICIPANT_RULE_SKIP
-    // Participant grants assign an ACTOR, not the whole Responsibility.
-    if (
-      assignmentRuleConfig(
-        rule.ruleConfig,
-      ).kind ===
-      "pixel_reality_participant"
-    ) {
-      continue;
-    }
-
     if (
       !ruleMatches(
         identity,

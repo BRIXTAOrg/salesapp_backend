@@ -178,289 +178,65 @@ async function createPublishedVersion(
     }
 
     if (stepType === "approval") {
-      // BRIXTA_SIMPLE_REVIEW_TARGETS_V1
-      //
-      // Responsibility review target:
-      // reports_to = employee's DEFAULT reporting policy
-      // user       = one specific employee
-      // role       = anybody eligible for a stable Authority Role
-      // department = the Department's configured default authority
-      const requestedKind =
-        String(
-          raw.approverKind ??
-          "reports_to",
-        );
+      const approverKind =
+        raw.approverKind === "reports_to" ? "reports_to" : "role";
 
-      const approverKind:
-        | "reports_to"
-        | "user"
-        | "role"
-        | "department" =
-        (
-          requestedKind ===
-            "reports_to" ||
-          requestedKind ===
-            "user" ||
-          requestedKind ===
-            "role" ||
-          requestedKind ===
-            "department"
-        )
-          ? requestedKind
-          : "reports_to";
+      const roleIds = numberArray(raw.approverRoleIds);
 
-      const roleIds =
-        numberArray(
-          raw.approverRoleIds,
-        );
-
-      const approverUserId =
-        Number(
-          raw.approverUserId,
-        );
-
-      const approverDepartmentId =
-        String(
-          raw.approverDepartmentId ??
-          "",
-        ).trim();
-
-      if (
-        approverKind ===
-          "role" &&
-        !roleIds.length
-      ) {
+      if (approverKind === "role" && !roleIds.length) {
         throw new Error(
-          `Step ${index + 1}: choose a Role for this review.`,
+          `Step ${index + 1}: choose who should verify this step.`,
         );
       }
 
-      if (
-        approverKind ===
-          "user" &&
-        (
-          !Number.isInteger(
-            approverUserId,
-          ) ||
-          approverUserId <= 0
-        )
-      ) {
-        throw new Error(
-          `Step ${index + 1}: choose an employee for this review.`,
-        );
-      }
+      const policyKey = `${input.workflowKey}_v${input.version}_step_${index + 1}_approval`;
 
-      if (
-        approverKind ===
-          "department" &&
-        !approverDepartmentId
-      ) {
-        throw new Error(
-          `Step ${index + 1}: choose a Department for this review.`,
-        );
-      }
+      const [policy] = await db
+        .insert(approvalPolicies)
+        .values({
+          key: policyKey,
+          name: `${input.workflowName} — ${title}`,
+          mode: "any",
+          minimumApprovals: 1,
+          enabled: true,
+          config: {
+            origin: "workflow_builder",
+          },
+          createdByUserId: input.actorUserId,
+        })
+        .returning();
 
-      const policyKey =
-        `${input.workflowKey}_v${input.version}_step_${index + 1}_approval`;
+      approvalPolicyId = policy.id;
 
-      const [policy] =
-        await db
-          .insert(
-            approvalPolicies,
-          )
-          .values({
-            key:
-              policyKey,
-
-            name:
-              `${input.workflowName} — ${title}`,
-
-            mode:
-              "any",
-
-            minimumApprovals:
-              1,
-
-            enabled:
-              true,
-
-            config: {
-              origin:
-                "responsibility_inline_review",
-            },
-
-            createdByUserId:
-              input.actorUserId,
-          })
-          .returning();
-
-      approvalPolicyId =
-        policy.id;
-
-      if (
-        approverKind ===
-        "reports_to"
-      ) {
-        await db
-          .insert(
-            approvalPolicyActors,
-          )
-          .values({
-            policyId:
-              policy.id,
-
-            subjectType:
-              "reports_to",
-
-            roleId:
-              null,
-
-            userId:
-              null,
-
-            scopeType:
-              null,
-
-            scopeConfig:
-              {},
-
-            sequence:
-              0,
-
-            enabled:
-              true,
-          });
-      }
-
-      if (
-        approverKind ===
-        "user"
-      ) {
-        await db
-          .insert(
-            approvalPolicyActors,
-          )
-          .values({
-            policyId:
-              policy.id,
-
-            subjectType:
-              "user",
-
-            roleId:
-              null,
-
-            userId:
-              approverUserId,
-
-            scopeType:
-              null,
-
-            scopeConfig:
-              {},
-
-            sequence:
-              0,
-
-            enabled:
-              true,
-          });
-      }
-
-      if (
-        approverKind ===
-        "role"
-      ) {
-        await db
-          .insert(
-            approvalPolicyActors,
-          )
-          .values(
-            roleIds.map(
-              (
-                roleId,
-              ) => ({
-                policyId:
-                  policy.id,
-
-                subjectType:
-                  "role",
-
-                roleId,
-
-                userId:
-                  null,
-
-                scopeType:
-                  null,
-
-                scopeConfig:
-                  {},
-
-                sequence:
-                  0,
-
-                enabled:
-                  true,
-              }),
-            ),
-          );
-      }
-
-      if (
-        approverKind ===
-        "department"
-      ) {
-        await db
-          .insert(
-            approvalPolicyActors,
-          )
-          .values({
-            policyId:
-              policy.id,
-
-            subjectType:
-              "department",
-
-            roleId:
-              null,
-
-            userId:
-              null,
-
-            scopeType:
-              "department",
-
-            scopeConfig: {
-              departmentId:
-                approverDepartmentId,
-            },
-
-            sequence:
-              0,
-
-            enabled:
-              true,
-          });
-      }
+      await db.insert(approvalPolicyActors).values(
+        approverKind === "reports_to"
+          ? [
+              {
+                policyId: policy.id,
+                subjectType: "reports_to",
+                roleId: null,
+                userId: null,
+                scopeType: null,
+                scopeConfig: {},
+                sequence: 0,
+                enabled: true,
+              },
+            ]
+          : roleIds.map((roleId) => ({
+              policyId: policy.id,
+              subjectType: "role",
+              roleId,
+              userId: null,
+              scopeType: null,
+              scopeConfig: {},
+              sequence: 0,
+              enabled: true,
+            })),
+      );
 
       stepConfig = {
         approverKind,
-
-        approverRoleIds:
-          roleIds,
-
-        approverUserId:
-          approverKind ===
-            "user"
-            ? approverUserId
-            : null,
-
-        approverDepartmentId:
-          approverKind ===
-            "department"
-            ? approverDepartmentId
-            : null,
+        approverRoleIds: roleIds,
       };
     }
 

@@ -13,10 +13,6 @@ import {
   users,
 } from "../../db/schema";
 
-import {
-  capabilityAssignmentRules,
-} from "../../db/applianceSchema";
-
 import type {
   KernelActor,
   KernelConditionGroup,
@@ -24,10 +20,6 @@ import type {
   KernelValueRef,
   ResponsibilityKernel,
 } from "./types";
-
-import {
-  resolveReportingManager,
-} from "../../services/reportingResolver";
 
 function objectValue(
   value: unknown,
@@ -218,64 +210,6 @@ function referenceUserId(
   return null;
 }
 
-async function explicitParticipantUserIds(
-  db: AppDatabase,
-  responsibilityId: number,
-  actorId: string,
-): Promise<number[]> {
-  const rows = await db
-    .select({
-      subjectValue:
-        capabilityAssignmentRules.subjectValue,
-      config:
-        capabilityAssignmentRules.config,
-    })
-    .from(capabilityAssignmentRules)
-    .where(
-      and(
-        eq(
-          capabilityAssignmentRules.capabilityId,
-          responsibilityId,
-        ),
-        eq(
-          capabilityAssignmentRules.subjectType,
-          "user",
-        ),
-        eq(
-          capabilityAssignmentRules.effect,
-          "allow",
-        ),
-        eq(
-          capabilityAssignmentRules.enabled,
-          true,
-        ),
-      ),
-    );
-
-  const ids = rows.flatMap((row) => {
-    const config =
-      objectValue(row.config);
-
-    if (
-      config.kind !==
-        "pixel_reality_participant" ||
-      config.actorId !== actorId
-    ) {
-      return [];
-    }
-
-    const userId =
-      Number(row.subjectValue);
-
-    return Number.isInteger(userId) &&
-      userId > 0
-        ? [userId]
-        : [];
-  });
-
-  return [...new Set(ids)];
-}
-
 export async function resolveActorUserIds(
   db: AppDatabase,
   kernel: ResponsibilityKernel,
@@ -288,31 +222,18 @@ export async function resolveActorUserIds(
 
   if (!actor) return [];
 
-  const explicit =
-    await explicitParticipantUserIds(
-      db,
-      world.responsibilityId,
-      actorId,
-    );
-
   // This conventional key always means the employee whose record/process is
   // being operated on. That keeps manager/reviewer actions unambiguous.
-  const resolved =
-    actor.id === "current_employee"
-      ? [world.subjectUserId]
-      : await resolveActorResolver(
-          db,
-          kernel,
-          actor,
-          world,
-        );
+  if (actor.id === "current_employee") {
+    return [world.subjectUserId];
+  }
 
-  return [
-    ...new Set([
-      ...resolved,
-      ...explicit,
-    ]),
-  ];
+  return resolveActorResolver(
+    db,
+    kernel,
+    actor,
+    world,
+  );
 }
 
 async function resolveActorResolver(
@@ -369,20 +290,14 @@ async function resolveActorResolver(
         ) ??
         world.subjectUserId;
 
-      const resolution =
-        await resolveReportingManager(
-          db,
-          subject,
-        );
+      const [row] = await db
+        .select({ reportsToId: users.reportsToId })
+        .from(users)
+        .where(eq(users.id, subject))
+        .limit(1);
 
-      return (
-        resolution.status ===
-          "resolved" &&
-        resolution.managerId
-      )
-        ? [
-            resolution.managerId,
-          ]
+      return row?.reportsToId
+        ? [row.reportsToId]
         : [];
     }
 
@@ -415,20 +330,14 @@ async function resolveActorResolver(
         resolver.relation === "manager" ||
         resolver.relation === "reports_to"
       ) {
-        const resolution =
-          await resolveReportingManager(
-            db,
-            sourceUserId,
-          );
+        const [row] = await db
+          .select({ reportsToId: users.reportsToId })
+          .from(users)
+          .where(eq(users.id, sourceUserId))
+          .limit(1);
 
-        return (
-          resolution.status ===
-            "resolved" &&
-          resolution.managerId
-        )
-          ? [
-              resolution.managerId,
-            ]
+        return row?.reportsToId
+          ? [row.reportsToId]
           : [];
       }
 

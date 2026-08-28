@@ -41,13 +41,6 @@ import {
   writeAudit,
 } from "../services/audit";
 
-import {
-  getReportingSnapshot,
-  refreshReportingCaches,
-  resolveReportingManager,
-  saveReportingPolicy,
-} from "../services/reportingResolver";
-
 function normalizeIds(
   raw: unknown,
 ): number[] {
@@ -371,140 +364,17 @@ export function registerEmployeeAdminRoutes(
           );
         }
 
-        const reportingRows =
-          await Promise.all(
-            employees.map(
-              async (
-                employee,
-              ) => ({
-                userId:
-                  employee.id,
-
-                resolution:
-                  await resolveReportingManager(
-                    db,
-                    employee.id,
-                  ),
-              }),
-            ),
-          );
-
-        const reportingMap =
-          new Map(
-            reportingRows.map(
-              (item) => [
-                item.userId,
-                item.resolution,
-              ],
-            ),
-          );
-
-        const directReportCounts =
-          new Map<number, number>();
-
-        for (
-          const item of
-          reportingRows
-        ) {
-          if (
-            item.resolution
-              .status ===
-              "resolved" &&
-            item.resolution
-              .managerId
-          ) {
-            directReportCounts.set(
-              item.resolution
-                .managerId,
-
-              (
-                directReportCounts.get(
-                  item.resolution
-                    .managerId,
-                ) ?? 0
-              ) + 1,
-            );
-          }
-        }
-
-        const names =
-          new Map(
-            employees.map(
-              (employee) => [
-                employee.id,
-                employee.name ??
-                  employee.employeeCode ??
-                  `Employee ${employee.id}`,
-              ],
-            ),
-          );
-
         return res.json({
           success: true,
-
           employees:
             employees.map(
-              (employee) => {
-                const reporting =
-                  reportingMap.get(
+              (employee) => ({
+                ...employee,
+                directResponsibilityCount:
+                  counts.get(
                     employee.id,
-                  );
-
-                const managerId =
-                  reporting
-                    ?.status ===
-                    "resolved"
-                    ? reporting.managerId
-                    : null;
-
-                return {
-                  ...employee,
-
-                  reportsToId:
-                    managerId,
-
-                  reportingPolicy:
-                    reporting
-                      ?.policy ?? {
-                        version: 1,
-                        mode: "unset",
-                      },
-
-                  reportingMode:
-                    reporting
-                      ?.policy.mode ??
-                    "unset",
-
-                  reportingStatus:
-                    reporting
-                      ?.status ??
-                    "unset",
-
-                  reportingCandidateCount:
-                    reporting
-                      ?.candidateIds
-                      .length ??
-                    0,
-
-                  reportingManagerName:
-                    managerId
-                      ? names.get(
-                          managerId,
-                        ) ??
-                        null
-                      : null,
-
-                  directReportCount:
-                    directReportCounts.get(
-                      employee.id,
-                    ) ?? 0,
-
-                  directResponsibilityCount:
-                    counts.get(
-                      employee.id,
-                    ) ?? 0,
-                };
-              },
+                  ) ?? 0,
+              }),
             ),
         });
       },
@@ -619,12 +489,6 @@ export function registerEmployeeAdminRoutes(
             .limit(1),
         ]);
 
-        const reporting =
-          await getReportingSnapshot(
-            db,
-            userId,
-          );
-
         return res.json({
           success: true,
           employee: {
@@ -653,28 +517,7 @@ export function registerEmployeeAdminRoutes(
             zone:
               employee.zone,
             reportsToId:
-              reporting
-                .resolution
-                .managerId,
-
-            reportingMode:
-              reporting
-                .policy
-                .mode,
-
-            reportingStatus:
-              reporting
-                .resolution
-                .status,
-
-            reportingManagerName:
-              reporting
-                .manager
-                ?.name ??
-              reporting
-                .manager
-                ?.employeeCode ??
-              null,
+              employee.reportsToId,
             status:
               employee.status,
             mobileAccess:
@@ -694,183 +537,7 @@ export function registerEmployeeAdminRoutes(
           runtime:
             runtimeRows[0] ??
             null,
-
-          reporting,
         });
-      },
-    ),
-  );
-
-  router.get(
-    "/employees/:id/reporting-policy",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(
-            req.params.id,
-          );
-
-        if (
-          !Number.isInteger(
-            userId,
-          ) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        return res.json({
-          success: true,
-          ...await getReportingSnapshot(
-            db,
-            userId,
-          ),
-        });
-      },
-    ),
-  );
-
-  router.post(
-    "/employees/:id/reporting-policy/preview",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(
-            req.params.id,
-          );
-
-        if (
-          !Number.isInteger(
-            userId,
-          ) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        return res.json({
-          success: true,
-          ...await getReportingSnapshot(
-            db,
-            userId,
-            req.body
-              ?.reportingPolicy ??
-            req.body
-              ?.policy,
-          ),
-        });
-      },
-    ),
-  );
-
-  router.put(
-    "/employees/:id/reporting-policy",
-    withAdminTenantDb<AdminRequest>(
-      async (
-        req,
-        res,
-        db,
-      ) => {
-        const userId =
-          Number(
-            req.params.id,
-          );
-
-        if (
-          !Number.isInteger(
-            userId,
-          ) ||
-          userId <= 0
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Invalid employee ID.",
-            });
-        }
-
-        try {
-          const reporting =
-            await saveReportingPolicy(
-              db,
-              {
-                userId,
-
-                policy:
-                  req.body
-                    ?.reportingPolicy ??
-                  req.body
-                    ?.policy,
-
-                actorUserId:
-                  req.adminActor
-                    ?.userId,
-              },
-            );
-
-          await refreshReportingCaches(
-            db,
-          );
-
-          await writeAudit(
-            db,
-            {
-              actorUserId:
-                req.adminActor
-                  ?.userId,
-
-              action:
-                "employee.reporting_policy_update",
-
-              entityType:
-                "employee",
-
-              entityId:
-                userId,
-
-              afterState:
-                reporting,
-            },
-          );
-
-          return res.json({
-            success: true,
-            ...reporting,
-          });
-        } catch (
-          error: any
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                error?.message ??
-                "Unable to save reporting policy.",
-            });
-        }
       },
     ),
   );
@@ -1056,35 +723,6 @@ export function registerEmployeeAdminRoutes(
               );
           }
 
-          // BRIXTA_REPORTING_CREATE
-          let reporting = null;
-
-          if (
-            "reportingPolicy" in
-            (req.body ?? {})
-          ) {
-            reporting =
-              await saveReportingPolicy(
-                db,
-                {
-                  userId:
-                    created.id,
-
-                  policy:
-                    req.body
-                      .reportingPolicy,
-
-                  actorUserId:
-                    req.adminActor
-                      ?.userId,
-                },
-              );
-          }
-
-          await refreshReportingCaches(
-            db,
-          );
-
           await writeAudit(
             db,
             {
@@ -1256,60 +894,6 @@ export function registerEmployeeAdminRoutes(
           )
           .returning();
 
-        // BRIXTA_REPORTING_PROFILE_UPDATE
-        let reporting =
-          await getReportingSnapshot(
-            db,
-            userId,
-          );
-
-        if (
-          "reportingPolicy" in
-          (req.body ?? {})
-        ) {
-          reporting =
-            await saveReportingPolicy(
-              db,
-              {
-                userId,
-
-                policy:
-                  req.body
-                    .reportingPolicy,
-
-                actorUserId:
-                  req.adminActor
-                    ?.userId,
-              },
-            );
-        }
-
-        /*
-         * Department / area / zone changes may affect
-         * Role+scope reporting policies elsewhere.
-         */
-        await refreshReportingCaches(
-          db,
-        );
-
-        reporting =
-          await getReportingSnapshot(
-            db,
-            userId,
-          );
-
-        const [fresh] =
-          await db
-            .select()
-            .from(users)
-            .where(
-              eq(
-                users.id,
-                userId,
-              ),
-            )
-            .limit(1);
-
         await writeAudit(
           db,
           {
@@ -1323,19 +907,15 @@ export function registerEmployeeAdminRoutes(
               userId,
             beforeState:
               before,
-            afterState: {
-              ...(fresh ?? updated),
-              reporting,
-            },
+            afterState:
+              updated,
           },
         );
 
         return res.json({
           success: true,
           employee:
-            fresh ?? updated,
-
-          reporting,
+            updated,
         });
       },
     ),
@@ -1401,11 +981,6 @@ export function registerEmployeeAdminRoutes(
                 "Employee not found.",
             });
         }
-
-        // BRIXTA_REPORTING_STATUS_REFRESH
-        await refreshReportingCaches(
-          db,
-        );
 
         await writeAudit(
           db,
@@ -2087,11 +1662,6 @@ export function registerEmployeeAdminRoutes(
                 ),
               );
           }
-
-          // BRIXTA_REPORTING_ROLE_REFRESH
-          await refreshReportingCaches(
-            db,
-          );
 
           await writeAudit(
             db,

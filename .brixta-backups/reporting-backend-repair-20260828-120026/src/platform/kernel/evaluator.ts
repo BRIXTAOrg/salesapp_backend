@@ -25,10 +25,6 @@ import type {
   ResponsibilityKernel,
 } from "./types";
 
-import {
-  resolveReportingManager,
-} from "../../services/reportingResolver";
-
 function objectValue(
   value: unknown,
 ): Record<string, unknown> {
@@ -369,20 +365,14 @@ async function resolveActorResolver(
         ) ??
         world.subjectUserId;
 
-      const resolution =
-        await resolveReportingManager(
-          db,
-          subject,
-        );
+      const [row] = await db
+        .select({ reportsToId: users.reportsToId })
+        .from(users)
+        .where(eq(users.id, subject))
+        .limit(1);
 
-      return (
-        resolution.status ===
-          "resolved" &&
-        resolution.managerId
-      )
-        ? [
-            resolution.managerId,
-          ]
+      return row?.reportsToId
+        ? [row.reportsToId]
         : [];
     }
 
@@ -415,20 +405,14 @@ async function resolveActorResolver(
         resolver.relation === "manager" ||
         resolver.relation === "reports_to"
       ) {
-        const resolution =
-          await resolveReportingManager(
-            db,
-            sourceUserId,
-          );
+        const [row] = await db
+          .select({ reportsToId: users.reportsToId })
+          .from(users)
+          .where(eq(users.id, sourceUserId))
+          .limit(1);
 
-        return (
-          resolution.status ===
-            "resolved" &&
-          resolution.managerId
-        )
-          ? [
-              resolution.managerId,
-            ]
+        return row?.reportsToId
+          ? [row.reportsToId]
           : [];
       }
 
