@@ -49,12 +49,6 @@ export async function authorizeAction(
     contextType?: string | null;
     contextId?: string | null;
     allowCompleted?: boolean;
-
-    /*
-     * Set ONLY after the Kernel has verified that this actor may act
-     * on a concrete existing Responsibility record.
-     */
-    allowDynamicParticipation?: boolean;
   },
 ): Promise<ActionAuthorization> {
   const [action] = await db
@@ -95,10 +89,7 @@ export async function authorizeAction(
     action.capabilityId ??
     null;
 
-  if (
-    capabilityId &&
-    !input.allowDynamicParticipation
-  ) {
+  if (capabilityId) {
     const resolved =
       await getResolvedCapabilitiesForUser(
         db,

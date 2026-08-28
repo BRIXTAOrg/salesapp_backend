@@ -565,16 +565,10 @@ export async function resolveReportingManager(
             policy.roleId,
           ),
 
-          or(
-            eq(
-              users.isSalesAppUser,
-              true,
-            ),
-            eq(
-              users.isDashboardUser,
-              true,
-            ),
-          )!,
+          eq(
+            users.isSalesAppUser,
+            true,
+          ),
 
           eq(
             users.status,

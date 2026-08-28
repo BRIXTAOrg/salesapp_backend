@@ -309,15 +309,11 @@ async function resolveResponsibilityForActor(
     };
   }
 
-  /*
-   * IMPORTANT:
-   * Runtime resolution is a READ path.
-   *
-   * CRUD action definitions are synchronized when a Responsibility
-   * is created/updated/published. Performing UPSERTs here causes
-   * concurrent runtime/Admin GET requests to deadlock on
-   * action_definitions.
-   */
+  await ensureResponsibilityActions(
+    db,
+    responsibility,
+  );
+
   const published =
     await getPublishedRuntimeManifest(
       db,

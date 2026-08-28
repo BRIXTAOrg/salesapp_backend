@@ -50,11 +50,6 @@ import {
 } from "../services/approvalPolicyResolver";
 
 import {
-  decideKernelDecision,
-  listKernelDecisions,
-} from "../services/kernelDecisionInbox";
-
-import {
   executeKernelAction,
   getKernelRuntime,
 } from "../platform/kernel/runtimeEngine";
@@ -393,122 +388,10 @@ export function registerRuntimeAdminRoutes(
           }
         }
 
-        const kernelDecisions =
-          await listKernelDecisions(
-            db,
-            actorUserId,
-            status ===
-              "all"
-              ? "all"
-              : "pending",
-          );
-
-        /*
-         * Pixel / Kernel is the more specific Responsibility reality.
-         * If an inline Workflow approval and a Kernel decision both exist
-         * for the same record, show the Kernel decision only.
-         */
-        const kernelRecordIds =
-          new Set(
-            kernelDecisions
-              .map(
-                (decision) =>
-                  String(
-                    decision
-                      .recordId ??
-                    objectValue(
-                      decision.payload,
-                    ).recordId ??
-                    "",
-                  ),
-              )
-              .filter(Boolean),
-          );
-
-        const workflowInstanceIds =
-          eligible
-            .map(
-              (row) =>
-                String(
-                  objectValue(
-                    row.payload,
-                  )
-                    .workflowInstanceId ??
-                  "",
-                ),
-            )
-            .filter(Boolean);
-
-        const workflowContexts =
-          workflowInstanceIds.length
-            ? await db
-                .select({
-                  id:
-                    workflowInstances.id,
-
-                  contextType:
-                    workflowInstances.contextType,
-
-                  contextId:
-                    workflowInstances.contextId,
-                })
-                .from(
-                  workflowInstances,
-                )
-                .where(
-                  inArray(
-                    workflowInstances.id,
-                    workflowInstanceIds,
-                  ),
-                )
-            : [];
-
-        const contextByWorkflow =
-          new Map(
-            workflowContexts.map(
-              (item) => [
-                item.id,
-                item,
-              ],
-            ),
-          );
-
-        const workflowApprovals =
-          eligible.filter(
-            (row) => {
-              const workflowInstanceId =
-                String(
-                  objectValue(
-                    row.payload,
-                  )
-                    .workflowInstanceId ??
-                  "",
-                );
-
-              const context =
-                contextByWorkflow.get(
-                  workflowInstanceId,
-                );
-
-              return !(
-                context
-                  ?.contextType ===
-                  "responsibility_record" &&
-                context.contextId &&
-                kernelRecordIds.has(
-                  context.contextId,
-                )
-              );
-            },
-          );
-
         return res.json({
           success: true,
-
-          approvals: [
-            ...workflowApprovals,
-            ...kernelDecisions,
-          ],
+          approvals:
+            eligible,
         });
       },
     ),
@@ -553,65 +436,6 @@ export function registerRuntimeAdminRoutes(
               error:
                 "decision must be approved or rejected.",
             });
-        }
-
-        const approvalId =
-          String(
-            req.params.id,
-          );
-
-        if (
-          approvalId.startsWith(
-            "kernel:",
-          )
-        ) {
-          const result =
-            await decideKernelDecision(
-              db,
-              {
-                approvalId,
-
-                actorUserId,
-
-                decision,
-
-                note:
-                  String(
-                    req.body
-                      ?.note ??
-                    "",
-                  ).trim() ||
-                  null,
-              },
-            );
-
-          if (!result.ok) {
-            return res
-              .status(
-                result.status,
-              )
-              .json({
-                success:
-                  false,
-
-                code:
-                  result.code,
-
-                error:
-                  result.error,
-              });
-          }
-
-          return res.json({
-            success:
-              true,
-
-            approval:
-              result.approval,
-
-            source:
-              "kernel",
-          });
         }
 
         const result =

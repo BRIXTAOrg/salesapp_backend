@@ -5,7 +5,6 @@ import {
   and,
   desc,
   eq,
-  inArray,
   ne,
   sql,
 } from "drizzle-orm";
@@ -34,10 +33,6 @@ import {
 import {
   getResolvedCapabilitiesForUser,
 } from "../../services/capabilityResolver";
-
-import {
-  resolveReportingManager,
-} from "../../services/reportingResolver";
 
 import {
   recordCompletedWorkflowAction,
@@ -72,7 +67,6 @@ import {
 } from "./evaluator";
 
 import type {
-  KernelAction,
   KernelDeviceContext,
   KernelEffect,
   KernelRuntimeWorld,
@@ -265,9 +259,6 @@ async function resolveResponsibilityForActor(
   db: AppDatabase,
   userId: number,
   key: string,
-  options: {
-    allowUnassigned?: boolean;
-  } = {},
 ) {
   const responsibility =
     await getResponsibilityByKey(
@@ -290,16 +281,10 @@ async function resolveResponsibilityForActor(
       userId,
     );
 
-  const isAssigned =
-    assigned.some(
-      (item) =>
-        item.id ===
-        responsibility.id,
-    );
-
   if (
-    !isAssigned &&
-    !options.allowUnassigned
+    !assigned.some(
+      (item) => item.id === responsibility.id,
+    )
   ) {
     return {
       ok: false as const,
@@ -309,15 +294,11 @@ async function resolveResponsibilityForActor(
     };
   }
 
-  /*
-   * IMPORTANT:
-   * Runtime resolution is a READ path.
-   *
-   * CRUD action definitions are synchronized when a Responsibility
-   * is created/updated/published. Performing UPSERTs here causes
-   * concurrent runtime/Admin GET requests to deadlock on
-   * action_definitions.
-   */
+  await ensureResponsibilityActions(
+    db,
+    responsibility,
+  );
+
   const published =
     await getPublishedRuntimeManifest(
       db,
@@ -338,8 +319,6 @@ async function resolveResponsibilityForActor(
     responsibility,
     published,
     kernel: published.kernel,
-    assigned:
-      isAssigned,
   };
 }
 
@@ -388,21 +367,11 @@ async function buildWorld(
     userSummary(db, subjectUserId),
   ]);
 
-  const managerResolution =
-    await resolveReportingManager(
-      db,
-      subjectUserId,
-    );
-
   const manager =
-    (
-      managerResolution.status ===
-        "resolved" &&
-      managerResolution.managerId
-    )
+    subjectUser?.reportsToId
       ? await userSummary(
           db,
-          managerResolution.managerId,
+          subjectUser.reportsToId,
         )
       : null;
 
@@ -549,129 +518,6 @@ async function buildWorld(
   return world;
 }
 
-const DEFAULT_DECISION_KINDS =
-  new Set([
-    "approve",
-    "reject",
-    "return",
-    "acknowledge",
-    "sign",
-    "complete",
-    "cancel",
-  ]);
-
-function isDecisionActionKind(
-  kind: string,
-) {
-  return DEFAULT_DECISION_KINDS.has(
-    kind,
-  );
-}
-
-function actionAvailableInState(
-  action: KernelAction,
-  world: KernelRuntimeWorld,
-) {
-  const currentStates =
-    Object.values(
-      world.state,
-    );
-
-  const availableState =
-    String(
-      action.config
-        .availableState ??
-      "",
-    ).trim();
-
-  if (
-    availableState &&
-    !currentStates.includes(
-      availableState,
-    )
-  ) {
-    return false;
-  }
-
-  const rawStates =
-    action.config
-      .availableStates;
-
-  if (
-    Array.isArray(
-      rawStates,
-    )
-  ) {
-    const allowed =
-      rawStates
-        .map(String)
-        .filter(Boolean);
-
-    if (
-      allowed.length &&
-      !allowed.some(
-        (state) =>
-          currentStates.includes(
-            state,
-          ),
-      )
-    ) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
-/*
- * AUTHORITY PRECEDENCE
- *
- * 1. Explicit actorId authored by Pixel Reality / Kernel:
- *      use it.
- *
- * 2. Decision-class action with NO actor:
- *      use the record owner's Employee default reporting policy.
- *
- * 3. Non-decision actorless action:
- *      preserve existing behavior.
- */
-async function actionActorCanAct(
-  db: AppDatabase,
-  kernel: ResponsibilityKernel,
-  action: KernelAction,
-  world: KernelRuntimeWorld,
-) {
-  if (action.actorId) {
-    return actorCanAct(
-      db,
-      kernel,
-      action.actorId,
-      world,
-    );
-  }
-
-  if (
-    !isDecisionActionKind(
-      action.kind,
-    )
-  ) {
-    return true;
-  }
-
-  const reporting =
-    await resolveReportingManager(
-      db,
-      world.subjectUserId,
-    );
-
-  return (
-    reporting.status ===
-      "resolved" &&
-    reporting.managerId ===
-      world.actorUserId
-  );
-}
-
 async function availablePossibilities(
   db: AppDatabase,
   kernel: ResponsibilityKernel,
@@ -707,20 +553,14 @@ async function availablePossibilities(
       }
 
       if (
-        actionAvailableInState(
-          possibility.action,
-          world,
-        ) &&
-        await actionActorCanAct(
+        await actorCanAct(
           db,
           kernel,
-          possibility.action,
+          possibility.action.actorId,
           world,
         )
       ) {
-        actions.push(
-          possibility.action,
-        );
+        actions.push(possibility.action);
       }
       continue;
     }
@@ -772,12 +612,6 @@ export async function getKernelRuntime(
       db,
       input.userId,
       input.responsibilityKey,
-      {
-        allowUnassigned:
-          Boolean(
-            input.recordId,
-          ),
-      },
     );
 
   if (!resolved.ok) return resolved;
@@ -815,33 +649,17 @@ export async function getKernelRuntime(
     world,
   );
 
-  const hasExplicitActorOutput =
-    possibilities.outputs.some(
-      (output) =>
-        Array.isArray(
-          output.actorIds,
-        ) &&
-        output.actorIds.length > 0,
-    );
-
   if (
     record &&
-    record.userId !==
-      input.userId &&
-    possibilities.actions.length ===
-      0 &&
-    (
-      resolved.assigned
-        ? possibilities.outputs.length ===
-          0
-        : !hasExplicitActorOutput
-    )
+    record.userId !== input.userId &&
+    possibilities.actions.length === 0 &&
+    possibilities.outputs.length === 0
   ) {
     return {
       ok: false,
       status: 403,
       code: "KERNEL_RECORD_NOT_VISIBLE",
-      error: "This record has no actor-projected action/output available to the current user.",
+      error: "This record has no action/output available to the current actor.",
     };
   }
 
@@ -1258,12 +1076,6 @@ export async function executeKernelAction(
     db,
     input.userId,
     input.responsibilityKey,
-    {
-      allowUnassigned:
-        Boolean(
-          input.recordId,
-        ),
-    },
   );
 
   if (!resolved.ok) return resolved;
@@ -1313,26 +1125,14 @@ export async function executeKernelAction(
   );
 
   if (
-    !evaluateConditionGroup(
+    !evaluateConditionGroup(world, possibility.when) ||
+    !evaluateConditionGroup(world, possibility.action.requires) ||
+    !(await actorCanAct(
+      db,
+      resolved.kernel,
+      possibility.action.actorId,
       world,
-      possibility.when,
-    ) ||
-    !evaluateConditionGroup(
-      world,
-      possibility.action.requires,
-    ) ||
-    !actionAvailableInState(
-      possibility.action,
-      world,
-    ) ||
-    !(
-      await actionActorCanAct(
-        db,
-        resolved.kernel,
-        possibility.action,
-        world,
-      )
-    )
+    ))
   ) {
     return {
       ok: false,
@@ -1376,18 +1176,7 @@ export async function executeKernelAction(
       workflowInstanceId: input.workflowInstanceId,
       contextType: record ? "responsibility_record" : null,
       contextId: record?.id ?? null,
-      allowCompleted:
-        crudOperation ===
-        "read",
-
-      /*
-       * Kernel actor resolution above has already proven this user
-       * may perform THIS action on THIS concrete record.
-       */
-      allowDynamicParticipation:
-        resolved.assigned ===
-          false &&
-        Boolean(record),
+      allowCompleted: crudOperation === "read",
     },
   );
 

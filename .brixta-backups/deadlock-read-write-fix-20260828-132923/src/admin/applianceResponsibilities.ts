@@ -70,16 +70,11 @@ export function registerResponsibilityAdminRoutes(router: Router) {
         ruleCounts.map((row) => [row.capabilityId, Number(row.count)]),
       );
 
-      /*
-       * GET /responsibilities is intentionally read-only.
-       *
-       * ensureResponsibilityActions() performs action_definitions UPSERTs
-       * and belongs only on Responsibility create/update/publish paths.
-       *
-       * Keeping synchronization out of GET requests prevents PostgreSQL
-       * deadlocks when Control Center, Approvals and mobile runtime refresh
-       * concurrently.
-       */
+      for (const responsibility of responsibilities) {
+        if (responsibility.isActive) {
+          await ensureResponsibilityActions(db, responsibility);
+        }
+      }
 
       return res.json({
         success: true,

@@ -1,9 +1,3 @@
-import {
-  and,
-  eq,
-  inArray,
-} from "drizzle-orm";
-
 import type {
   Express,
 } from "express";
@@ -17,10 +11,6 @@ import {
 import {
   getResolvedCapabilitiesForUser,
 } from "../services/capabilityResolver";
-
-import {
-  workItems,
-} from "../db/applianceSchema";
 
 import {
   recordUsage,
@@ -121,63 +111,9 @@ export function registerRuntimeRoutes(
           return res.status(404).json({ success: false, error: "Responsibility not found." });
         }
 
-        const assigned =
-          await getResolvedCapabilitiesForUser(
-            db,
-            userId,
-          );
-
-        const baseAssigned =
-          assigned.some(
-            (item) =>
-              item.id ===
-              responsibility.id,
-          );
-
-        if (!baseAssigned) {
-          const [delegated] =
-            await db
-              .select({
-                id:
-                  workItems.id,
-              })
-              .from(
-                workItems,
-              )
-              .where(
-                and(
-                  eq(
-                    workItems.assigneeUserId,
-                    userId,
-                  ),
-
-                  eq(
-                    workItems.capabilityId,
-                    responsibility.id,
-                  ),
-
-                  inArray(
-                    workItems.status,
-                    [
-                      "assigned",
-                      "in_progress",
-                    ],
-                  ),
-                ),
-              )
-              .limit(1);
-
-          if (!delegated) {
-            return res
-              .status(403)
-              .json({
-                success:
-                  false,
-
-                error:
-                  "Responsibility is neither assigned nor delegated to this user.",
-              });
-          }
+        const assigned = await getResolvedCapabilitiesForUser(db, userId);
+        if (!assigned.some((item) => item.id === responsibility.id)) {
+          return res.status(403).json({ success: false, error: "Responsibility is not assigned." });
         }
 
         const manifest = await getPublishedRuntimeManifest(db, responsibility.id);

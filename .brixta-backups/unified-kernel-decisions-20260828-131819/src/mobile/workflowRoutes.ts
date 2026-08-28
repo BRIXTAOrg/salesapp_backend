@@ -13,10 +13,6 @@ import {
 } from "../services/workflowEngine";
 
 import {
-  decideKernelDecision,
-} from "../services/kernelDecisionInbox";
-
-import {
   getWorkflowBootstrapForUser,
 } from "../services/workflowBootstrap";
 
@@ -63,85 +59,11 @@ export function registerWorkflowRoutes(
           });
         }
 
-        const approvalId =
-          String(
-            req.params.id,
-          );
-
-        if (
-          approvalId.startsWith(
-            "kernel:",
-          )
-        ) {
-          const result =
-            await decideKernelDecision(
-              db,
-              {
-                approvalId,
-
-                actorUserId:
-                  userId,
-
-                decision,
-
-                note:
-                  String(
-                    req.body
-                      ?.note ??
-                    "",
-                  ).trim() ||
-                  null,
-              },
-            );
-
-          if (!result.ok) {
-            return res
-              .status(
-                result.status,
-              )
-              .json({
-                success:
-                  false,
-
-                code:
-                  result.code,
-
-                error:
-                  result.error,
-              });
-          }
-
-          return res.json({
-            success:
-              true,
-
-            approval:
-              result.approval,
-
-            source:
-              "kernel",
-
-            workflow:
-              await getWorkflowBootstrapForUser(
-                db,
-                userId,
-              ),
-          });
-        }
-
         const result = await decideWorkflowApproval(db, {
-          approvalRequestId:
-            approvalId,
-          actorUserId:
-            userId,
+          approvalRequestId: String(req.params.id),
+          actorUserId: userId,
           decision,
-          note:
-            String(
-              req.body
-                ?.note ??
-              "",
-            ).trim() ||
-            null,
+          note: String(req.body?.note ?? "").trim() || null,
         });
 
         if (!result.ok) {
