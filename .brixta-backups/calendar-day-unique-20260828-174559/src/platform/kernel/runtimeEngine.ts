@@ -1467,7 +1467,7 @@ async function enforceSubmissionGuards(
         code:
           "KERNEL_SUBMISSION_GUARD_UNSUPPORTED",
         error:
-          `${kind} currently requires scope "current_employee".`,
+          `date_range_no_overlap currently requires scope "current_employee".`,
       };
     }
 
@@ -1654,22 +1654,6 @@ async function enforceSubmissionGuards(
 
       continue;
     }
-
-    /*
-     * CALENDAR_DAY_UNIQUE
-     *
-     * Generic invariant:
-     *
-     * same Responsibility
-     * + same employee
-     * + same calendar day in configured timezone
-     * = reject another creation.
-     *
-     * Requested day is derived from SERVER TIME.
-     * Existing day is derived from the persisted DB created_at.
-     *
-     * This is stronger than trusting a client-provided datetime capture.
-     */
 
     const fromField =
       String(

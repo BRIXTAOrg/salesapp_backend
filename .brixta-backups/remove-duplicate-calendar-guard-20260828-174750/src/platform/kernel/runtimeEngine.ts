@@ -1670,6 +1670,159 @@ async function enforceSubmissionGuards(
      *
      * This is stronger than trusting a client-provided datetime capture.
      */
+    if (
+      kind ===
+      "calendar_day_unique"
+    ) {
+      const timezone =
+        String(
+          guard.timezone ??
+            "UTC",
+        ).trim();
+
+      const requestedDay =
+        submissionGuardCalendarDay(
+          new Date(),
+          timezone,
+        );
+
+      if (!requestedDay) {
+        return {
+          ok: false,
+          status: 409,
+          code:
+            "KERNEL_SUBMISSION_GUARD_INVALID",
+          error:
+            `Unable to resolve calendar day for timezone "${timezone}".`,
+        };
+      }
+
+      const conflictStatuses =
+        submissionGuardStringArray(
+          guard.conflictStatuses,
+        );
+
+      const ignoreCurrentRecord =
+        guard.ignoreCurrentRecord !==
+        false;
+
+      const existingRows =
+        await db
+          .select({
+            id:
+              dynamicSubmissions.id,
+
+            status:
+              dynamicSubmissions.status,
+
+            createdAt:
+              dynamicSubmissions.createdAt,
+          })
+          .from(
+            dynamicSubmissions,
+          )
+          .where(
+            and(
+              eq(
+                dynamicSubmissions.capabilityId,
+                input.responsibilityId,
+              ),
+
+              eq(
+                dynamicSubmissions.userId,
+                input.subjectUserId,
+              ),
+
+              ne(
+                dynamicSubmissions.status,
+                "deleted",
+              ),
+            ),
+          );
+
+      for (
+        const existing
+        of existingRows
+      ) {
+        if (
+          ignoreCurrentRecord &&
+          input.recordId &&
+          String(
+            existing.id,
+          ) ===
+            String(
+              input.recordId,
+            )
+        ) {
+          continue;
+        }
+
+        if (
+          conflictStatuses.length >
+            0 &&
+          !conflictStatuses.includes(
+            String(
+              existing.status,
+            ),
+          )
+        ) {
+          continue;
+        }
+
+        const existingDay =
+          submissionGuardCalendarDay(
+            existing.createdAt,
+            timezone,
+          );
+
+        if (
+          !existingDay ||
+          existingDay !==
+            requestedDay
+        ) {
+          continue;
+        }
+
+        return {
+          ok: false,
+          status: 409,
+          code:
+            "KERNEL_SUBMISSION_GUARD_FAILED",
+
+          error:
+            String(
+              guard.message ??
+                "You have already completed this action for today.",
+            ),
+
+          details: [
+            {
+              kind:
+                "calendar_day_unique",
+
+              timezone,
+
+              calendarDay:
+                requestedDay,
+
+              conflictRecordId:
+                existing.id,
+
+              conflictStatus:
+                existing.status,
+            },
+          ],
+        };
+      }
+
+      /*
+       * Different local calendar day.
+       *
+       * At exactly midnight in the configured timezone, this naturally
+       * becomes a different day and creation is permitted.
+       */
+      continue;
+    }
 
     const fromField =
       String(
