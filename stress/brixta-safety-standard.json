@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "jsonRequestBytes": 2097152,
+  "jsonResponseBytes": 8388608,
+  "uploadBytes": 8388608,
+  "upstreamTimeoutSeconds": 15,
+  "renderer": {
+    "serializedBlocks": 10000,
+    "roots": 256,
+    "depth": 64,
+    "directChildren": 2048,
+    "expandedNodes": 4096,
+    "animationSoft": 512,
+    "animationHard": 1024,
+    "rawStacNodes": 2048,
+    "rawStacExpandedNodes": 4096,
+    "rawStacDepth": 32,
+    "rawStacFanout": 256,
+    "rawStacBytes": 524288
+  },
+  "kernel": {
+    "actors": 512,
+    "objects": 512,
+    "contexts": 512,
+    "states": 1024,
+    "events": 1000,
+    "rules": 2000,
+    "conditionsPerGroup": 256,
+    "effectsPerAction": 256,
+    "pathChars": 512
+  },
+  "rateLimits": {
+    "loginPerMinute": 5,
+    "signupPerHour": 3,
+    "authenticatedReadsPerMinute": 120,
+    "authenticatedWritesPerMinute": 60,
+    "mediaUploadsPerMinute": 10
+  }
+}
