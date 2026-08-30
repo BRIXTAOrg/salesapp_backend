@@ -1470,6 +1470,113 @@ function submissionGuardStringArray(
     : [];
 }
 
+
+/*
+ * BRIXTA_COMPOSITE_CALENDAR_DAY_UNIQUE_V1
+ *
+ * Canonicalize business capture values for duplicate matching.
+ *
+ * Common reference captures are scalar IDs, but this intentionally
+ * understands { id: ... } as well so future richer reference payloads
+ * do not break dedupe semantics.
+ */
+function submissionGuardComparable(
+  value: unknown,
+): string {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return "null";
+  }
+
+  if (
+    typeof value ===
+      "string"
+  ) {
+    return (
+      `string:${value
+        .trim()
+        .toLowerCase()}`
+    );
+  }
+
+  if (
+    typeof value ===
+      "number" ||
+    typeof value ===
+      "boolean"
+  ) {
+    return (
+      `${typeof value}:${String(value)}`
+    );
+  }
+
+  if (
+    Array.isArray(
+      value,
+    )
+  ) {
+    return (
+      "array:[" +
+      value
+        .map(
+          submissionGuardComparable,
+        )
+        .join(",") +
+      "]"
+    );
+  }
+
+  if (
+    typeof value ===
+      "object"
+  ) {
+    const object =
+      objectValue(
+        value,
+      );
+
+    if (
+      object.id !==
+        undefined
+    ) {
+      return (
+        `id:${String(
+          object.id,
+        )
+          .trim()
+          .toLowerCase()}`
+      );
+    }
+
+    const keys =
+      Object.keys(
+        object,
+      ).sort();
+
+    return (
+      "object:{" +
+      keys
+        .map(
+          (key) =>
+            `${key}:${submissionGuardComparable(
+              object[key],
+            )}`,
+        )
+        .join(",") +
+      "}"
+    );
+  }
+
+  return (
+    `${typeof value}:${String(
+      value,
+    )}`
+  );
+}
+
+
 async function enforceSubmissionGuards(
   db: AppDatabase,
   input: {
@@ -1578,10 +1685,87 @@ async function enforceSubmissionGuards(
             "UTC",
         ).trim();
 
+      const daySource =
+        String(
+          guard.daySource ??
+            "capture",
+        ).trim();
+
+      if (
+        daySource !==
+          "capture" &&
+        daySource !==
+          "server_time"
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          code:
+            "KERNEL_SUBMISSION_GUARD_INVALID",
+          error:
+            `calendar_day_unique daySource must be "capture" or "server_time", not "${daySource}".`,
+        };
+      }
+
+      const matchFields =
+        submissionGuardStringArray(
+          guard.matchFields,
+        );
+
+      /*
+       * server_time is appropriate for:
+       *
+       *   "same salesman cannot add the same dealer twice TODAY"
+       *
+       * It does not trust an editable client datetime.
+       *
+       * capture preserves backwards compatibility with the existing
+       * attendance/date-field guard.
+       */
       const requestedRaw =
-        input.captures[
-          field
-        ];
+        daySource ===
+          "server_time"
+          ? new Date()
+              .toISOString()
+          : input.captures[
+              field
+            ];
+
+      for (
+        const matchField
+        of matchFields
+      ) {
+        if (
+          !Object.prototype.hasOwnProperty.call(
+            input.captures,
+            matchField,
+          ) ||
+          input.captures[
+            matchField
+          ] === null ||
+          input.captures[
+            matchField
+          ] === undefined ||
+          input.captures[
+            matchField
+          ] === ""
+        ) {
+          return {
+            ok: false,
+            status: 400,
+            code:
+              "KERNEL_SUBMISSION_GUARD_FAILED",
+            error:
+              `Duplicate-prevention field "${matchField}" is required.`,
+            details: [
+              {
+                kind,
+                matchField,
+              },
+            ],
+          };
+        }
+      }
 
       const requestedDay =
         submissionGuardCalendarDay(
@@ -1605,6 +1789,8 @@ async function enforceSubmissionGuards(
               kind,
               field,
               timezone,
+              daySource,
+              matchFields,
             },
           ],
         };
@@ -1628,6 +1814,8 @@ async function enforceSubmissionGuards(
               dynamicSubmissions.status,
             payload:
               dynamicSubmissions.payload,
+            createdAt:
+              dynamicSubmissions.createdAt,
           })
           .from(
             dynamicSubmissions,
@@ -1683,10 +1871,64 @@ async function enforceSubmissionGuards(
             existing.payload,
           );
 
+        /*
+         * Optional composite duplicate key.
+         *
+         * Example:
+         *
+         *   current employee
+         *   + dealer
+         *   + local day
+         */
+        let fieldsMatch =
+          true;
+
+        for (
+          const matchField
+          of matchFields
+        ) {
+          if (
+            !Object.prototype.hasOwnProperty.call(
+              payload,
+              matchField,
+            )
+          ) {
+            fieldsMatch =
+              false;
+            break;
+          }
+
+          if (
+            submissionGuardComparable(
+              input.captures[
+                matchField
+              ],
+            ) !==
+            submissionGuardComparable(
+              payload[
+                matchField
+              ],
+            )
+          ) {
+            fieldsMatch =
+              false;
+            break;
+          }
+        }
+
+        if (
+          !fieldsMatch
+        ) {
+          continue;
+        }
+
         const existingRaw =
-          payload[
-            field
-          ];
+          daySource ===
+            "server_time"
+            ? existing.createdAt
+            : payload[
+                field
+              ];
 
         const existingDay =
           submissionGuardCalendarDay(
@@ -1717,6 +1959,19 @@ async function enforceSubmissionGuards(
               kind,
               field,
               timezone,
+              daySource,
+              matchFields,
+              matchedValues:
+                Object.fromEntries(
+                  matchFields.map(
+                    (matchField) => [
+                      matchField,
+                      input.captures[
+                        matchField
+                      ],
+                    ],
+                  ),
+                ),
               calendarDay:
                 requestedDay,
               conflictRecordId:
