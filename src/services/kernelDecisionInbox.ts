@@ -423,6 +423,15 @@ export async function listKernelDecisions(
     | "all" =
     "pending",
 ) {
+  // The "pending" call happens on every single dashboard load (it's one
+  // of four parallel calls behind /api/workspace/manifest) -- it does
+  // not need to scan as far back as the dedicated Approvals/History
+  // page does. Records are already ordered by most-recently-updated
+  // first, so a much smaller window still surfaces anything actually
+  // current.
+  const scanLimit =
+    mode === "pending" ? 100 : 500;
+
   const records =
     await db
       .select({
@@ -468,15 +477,25 @@ export async function listKernelDecisions(
           dynamicSubmissions.updatedAt,
         ),
       )
-      .limit(500);
+      .limit(scanLimit);
 
+  // Each record needs its own kernel-runtime resolution to know whether
+  // it currently has a pending decision -- that's inherently expensive
+  // (responsibility lookup, world-state build, rule evaluation), and
+  // was previously done one record at a time, fully sequential, for up
+  // to 500 records on every dashboard load. Processing in small
+  // concurrent batches keeps the same per-record cost but no longer
+  // makes the whole request pay for every record's latency added
+  // together. Batch size is kept below the DB pool's max (10 -- see
+  // src/db/db.ts) so this can't itself exhaust the pool.
+  const BATCH_SIZE = 8;
   const pending:
     Record<string, unknown>[] =
     [];
 
-  for (
-    const record of records
-  ) {
+  async function resolveOne(
+    record: (typeof records)[number],
+  ): Promise<Record<string, unknown> | null> {
     const runtime =
       await getKernelRuntime(
         db,
@@ -492,7 +511,7 @@ export async function listKernelDecisions(
       );
 
     if (!runtime.ok) {
-      continue;
+      return null;
     }
 
     const actions =
@@ -501,7 +520,7 @@ export async function listKernelDecisions(
       );
 
     if (!actions.length) {
-      continue;
+      return null;
     }
 
     const item =
@@ -530,29 +549,48 @@ export async function listKernelDecisions(
       );
 
     if (!item) {
-      continue;
+      return null;
     }
 
-    pending.push(
-      normalizedDecision({
-        workItem:
-          item,
+    return normalizedDecision({
+      workItem:
+        item,
 
-        requesterUserId:
-          record.requesterUserId,
+      requesterUserId:
+        record.requesterUserId,
 
-        responsibilityKey:
-          record.responsibilityKey,
+      responsibilityKey:
+        record.responsibilityKey,
 
-        responsibilityTitle:
-          record.responsibilityTitle,
+      responsibilityTitle:
+        record.responsibilityTitle,
 
-        recordId:
-          record.id,
+      recordId:
+        record.id,
 
-        actions,
-      }),
-    );
+      actions,
+    });
+  }
+
+  for (
+    let start = 0;
+    start < records.length;
+    start += BATCH_SIZE
+  ) {
+    const batch =
+      records.slice(
+        start,
+        start + BATCH_SIZE,
+      );
+
+    const results =
+      await Promise.all(
+        batch.map(resolveOne),
+      );
+
+    for (const result of results) {
+      if (result) pending.push(result);
+    }
   }
 
   if (
