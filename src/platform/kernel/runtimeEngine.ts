@@ -1297,6 +1297,42 @@ async function applyEffect(
       break;
     }
 
+    case "device_sound": {
+      const allowed = new Set([
+        "action",
+        "notice",
+        "decision",
+        "select",
+        "success",
+      ]);
+      const requested = String(effect.config.preset ?? "notice");
+      result.preset = allowed.has(requested) ? requested : "notice";
+      result.volume = Math.max(0, Math.min(1, Number(effect.config.volume) || 1));
+      result.deliveryScope = "current_action_response_device";
+      break;
+    }
+
+    case "device_ring": {
+      const requested = String(effect.config.preset ?? "decision");
+      result.preset = requested === "notice" ? "notice" : "decision";
+      result.durationMs = Math.max(250, Math.min(8_000, Number(effect.config.durationMs) || 3_000));
+      result.vibrate = effect.config.vibrate !== false;
+      result.deliveryScope = "current_action_response_device";
+      break;
+    }
+
+    case "device_notification": {
+      const sound = String(effect.config.sound ?? "none");
+      const allowedSound = new Set(["none", "notice", "decision", "success"]);
+      result.title = String(effect.config.title ?? "BRIXTA").slice(0, 120);
+      result.body = String(effect.config.body ?? effect.config.message ?? "").slice(0, 500);
+      result.sound = allowedSound.has(sound) ? sound : "none";
+      result.vibrate = effect.config.vibrate === true;
+      result.deliveryScope = "current_action_response_device";
+      result.backgroundPush = false;
+      break;
+    }
+
     case "trigger_action":
       // Triggering arbitrary actions recursively can create cycles. The
       // backend emits a deterministic trigger instruction instead; the app or

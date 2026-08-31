@@ -401,6 +401,8 @@ export function registerRuntimeAdminRoutes(
               "all"
               ? "all"
               : "pending",
+            req.schemaName ??
+              undefined,
           );
 
         /*

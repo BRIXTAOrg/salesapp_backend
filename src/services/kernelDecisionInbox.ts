@@ -6,8 +6,9 @@ import {
   ne,
 } from "drizzle-orm";
 
-import type {
-  AppDatabase,
+import {
+  withTenantSchema,
+  type AppDatabase,
 } from "../db/db";
 
 import {
@@ -422,6 +423,7 @@ export async function listKernelDecisions(
     | "pending"
     | "all" =
     "pending",
+  schemaName?: string,
 ) {
   // The "pending" call happens on every single dashboard load (it's one
   // of four parallel calls behind /api/workspace/manifest) -- it does
@@ -479,26 +481,37 @@ export async function listKernelDecisions(
       )
       .limit(scanLimit);
 
-  // Each record needs its own kernel-runtime resolution to know whether
-  // it currently has a pending decision -- that's inherently expensive
-  // (responsibility lookup, world-state build, rule evaluation), and
-  // was previously done one record at a time, fully sequential, for up
-  // to 500 records on every dashboard load. Processing in small
-  // concurrent batches keeps the same per-record cost but no longer
-  // makes the whole request pay for every record's latency added
-  // together. Batch size is kept below the DB pool's max (10 -- see
-  // src/db/db.ts) so this can't itself exhaust the pool.
-  const BATCH_SIZE = 8;
+  /*
+   * IMPORTANT:
+   *
+   * withAdminTenantDb() gives this function a transaction-pinned
+   * pg.Client. pg does NOT support running multiple client.query()
+   * operations concurrently on that same client.
+   *
+   * When schemaName is available, each parallel Kernel evaluation
+   * below gets its OWN tenant transaction/client from the pool.
+   *
+   * Three workers + the outer admin transaction keeps plenty of
+   * headroom inside the pool's max=10.
+   *
+   * If schemaName is unavailable we deliberately fall back to one
+   * worker so the shared transaction handle remains safe.
+   */
+  const BATCH_SIZE =
+    schemaName
+      ? 3
+      : 1;
   const pending:
     Record<string, unknown>[] =
     [];
 
   async function resolveOne(
+    targetDb: AppDatabase,
     record: (typeof records)[number],
   ): Promise<Record<string, unknown> | null> {
     const runtime =
       await getKernelRuntime(
-        db,
+        targetDb,
         {
           userId,
 
@@ -525,7 +538,7 @@ export async function listKernelDecisions(
 
     const item =
       await ensureDecisionWorkItem(
-        db,
+        targetDb,
         {
           userId,
 
@@ -585,11 +598,28 @@ export async function listKernelDecisions(
 
     const results =
       await Promise.all(
-        batch.map(resolveOne),
+        batch.map(
+          (record) =>
+            schemaName
+              ? withTenantSchema(
+                  schemaName,
+                  (isolatedDb) =>
+                    resolveOne(
+                      isolatedDb,
+                      record,
+                    ),
+                )
+              : resolveOne(
+                  db,
+                  record,
+                ),
+        ),
       );
 
     for (const result of results) {
-      if (result) pending.push(result);
+      if (result) {
+        pending.push(result);
+      }
     }
   }
 
