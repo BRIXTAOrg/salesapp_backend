@@ -79,6 +79,10 @@ import type {
   ResponsibilityKernel,
 } from "./types";
 
+import {
+  evaluatePolicyExpressionBoolean,
+} from "./policyExpression";
+
 export type KernelRuntimeError = {
   ok: false;
   status: number;
@@ -702,6 +706,44 @@ async function availablePossibilities(
           world,
           possibility.action.requires,
         )
+      ) {
+        continue;
+      }
+
+      /*
+       * SERVER-AUTHORITATIVE AVAILABILITY.
+       *
+       * If a time/business policy says the action is unavailable,
+       * the backend does not even advertise it to Flutter.
+       */
+      const availabilityGuardFailure =
+        await enforceSubmissionGuards(
+          db,
+          {
+            action:
+              possibility.action,
+
+            responsibilityId:
+              world.responsibilityId,
+
+            subjectUserId:
+              world.subjectUserId,
+
+            recordId:
+              world.recordId,
+
+            captures:
+              world.captures,
+
+            world,
+
+            phase:
+              "availability",
+          },
+        );
+
+      if (
+        availabilityGuardFailure
       ) {
         continue;
       }
@@ -1621,6 +1663,8 @@ async function enforceSubmissionGuards(
     subjectUserId: number;
     recordId?: string | null;
     captures: Record<string, unknown>;
+    world: KernelRuntimeWorld;
+    phase?: "availability" | "submission";
   },
 ): Promise<KernelRuntimeError | null> {
   const rawGuards =
@@ -1658,7 +1702,9 @@ async function enforceSubmissionGuards(
       kind !==
         "date_range_no_overlap" &&
       kind !==
-        "calendar_day_unique"
+        "calendar_day_unique" &&
+      kind !==
+        "expression"
     ) {
       return {
         ok: false,
@@ -1668,6 +1714,138 @@ async function enforceSubmissionGuards(
         error:
           `Published Responsibility uses unsupported submission guard "${kind}".`,
       };
+    }
+
+    /*
+     * BRIXTA_GENERIC_PRE_ACTION_POLICY_V1
+     *
+     * Safe expression policies can affect:
+     *
+     * availability
+     * submission
+     * or both.
+     *
+     * All are rechecked by SERVER before persistence.
+     */
+    if (
+      kind ===
+      "expression"
+    ) {
+      const authoredPhase =
+        String(
+          guard.phase ??
+            "both",
+        ).trim();
+
+      if (
+        ![
+          "availability",
+          "submission",
+          "both",
+        ].includes(
+          authoredPhase,
+        )
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          code:
+            "KERNEL_SUBMISSION_GUARD_INVALID",
+          error:
+            `Invalid expression guard phase "${authoredPhase}".`,
+        };
+      }
+
+      if (
+        (
+          input.phase ??
+          "submission"
+        ) ===
+          "availability" &&
+        authoredPhase ===
+          "submission"
+      ) {
+        continue;
+      }
+
+      const placement =
+        String(
+          guard.placement ??
+            "server",
+        ).trim();
+
+      if (
+        placement !==
+          "auto" &&
+        placement !==
+          "server"
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          code:
+            "KERNEL_SUBMISSION_GUARD_INVALID",
+          error:
+            "Authoritative expression guards may use only auto or server placement.",
+        };
+      }
+
+      let allowed =
+        false;
+
+      try {
+        allowed =
+          evaluatePolicyExpressionBoolean(
+            guard.expression,
+            input.world,
+          );
+      } catch (
+        error
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          code:
+            "KERNEL_SUBMISSION_GUARD_INVALID",
+          error:
+            error instanceof Error
+              ? `Invalid expression guard: ${error.message}`
+              : "Invalid expression guard.",
+        };
+      }
+
+      if (
+        !allowed
+      ) {
+        return {
+          ok: false,
+          status: 409,
+          code:
+            String(
+              guard.code ??
+                "KERNEL_ACTION_POLICY_FAILED",
+            ),
+          error:
+            String(
+              guard.message ??
+                "This action is not available under the current business policy.",
+            ),
+          details: [
+            {
+              kind,
+              phase:
+                authoredPhase,
+              placement:
+                placement ===
+                  "auto"
+                  ? "server"
+                  : placement,
+            },
+          ],
+        };
+      }
+
+      continue;
     }
 
     const scope =
@@ -1727,6 +1905,10 @@ async function enforceSubmissionGuards(
             "capture",
         ).trim();
 
+      const guardPhase =
+        input.phase ??
+        "submission";
+
       if (
         daySource !==
           "capture" &&
@@ -1747,6 +1929,51 @@ async function enforceSubmissionGuards(
         submissionGuardStringArray(
           guard.matchFields,
         );
+
+      /*
+       * For GET/runtime availability:
+       *
+       * calendar_day_unique can hide an action immediately
+       * when the day is based on authoritative server time.
+       *
+       * Capture-dependent composite dedupe remains submit-time
+       * unless all matching values are already known.
+       */
+      if (
+        guardPhase ===
+        "availability"
+      ) {
+        if (
+          daySource !==
+          "server_time"
+        ) {
+          continue;
+        }
+
+        const complete =
+          matchFields.every(
+            (key) =>
+              Object.prototype.hasOwnProperty.call(
+                input.captures,
+                key,
+              ) &&
+              input.captures[
+                key
+              ] !== null &&
+              input.captures[
+                key
+              ] !== undefined &&
+              input.captures[
+                key
+              ] !== "",
+          );
+
+        if (
+          !complete
+        ) {
+          continue;
+        }
+      }
 
       /*
        * server_time is appropriate for:
@@ -2037,6 +2264,21 @@ async function enforceSubmissionGuards(
      *
      * This is stronger than trusting a client-provided datetime capture.
      */
+
+    /*
+     * Date-range guards require employee-supplied fields.
+     * Do not hide the action before those values exist;
+     * always enforce it on submission.
+     */
+    if (
+      (
+        input.phase ??
+        "submission"
+      ) ===
+        "availability"
+    ) {
+      continue;
+    }
 
     const fromField =
       String(
@@ -2455,6 +2697,11 @@ export async function executeKernelAction(
 
         captures:
           world.captures,
+
+        world,
+
+        phase:
+          "submission",
       },
     );
 

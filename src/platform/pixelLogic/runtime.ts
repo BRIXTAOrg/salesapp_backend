@@ -84,6 +84,113 @@ function getPath(value: unknown, path?: string) {
   return current;
 }
 
+function localTemporalParts(
+  value: unknown,
+  timezone: string,
+) {
+  const date =
+    new Date(
+      String(
+        value ?? "",
+      ),
+    );
+
+  if (
+    !Number.isFinite(
+      date.getTime(),
+    )
+  ) {
+    return null;
+  }
+
+  try {
+    const parts =
+      new Intl.DateTimeFormat(
+        "en-US",
+        {
+          timeZone:
+            timezone,
+
+          year:
+            "numeric",
+
+          month:
+            "2-digit",
+
+          day:
+            "2-digit",
+
+          weekday:
+            "short",
+
+          hour:
+            "2-digit",
+
+          minute:
+            "2-digit",
+
+          second:
+            "2-digit",
+
+          hourCycle:
+            "h23",
+        },
+      ).formatToParts(
+        date,
+      );
+
+    const values =
+      Object.fromEntries(
+        parts.map(
+          (part) => [
+            part.type,
+            part.value,
+          ],
+        ),
+      );
+
+    return {
+      year:
+        Number(
+          values.year,
+        ),
+
+      month:
+        Number(
+          values.month,
+        ),
+
+      day:
+        Number(
+          values.day,
+        ),
+
+      hour:
+        Number(
+          values.hour,
+        ),
+
+      minute:
+        Number(
+          values.minute,
+        ),
+
+      second:
+        Number(
+          values.second,
+        ),
+
+      weekday:
+        String(
+          values.weekday ??
+            "",
+        ),
+    };
+  } catch {
+    return null;
+  }
+}
+
 function executeCoreNode(
   node: PixelLogicNode,
   inputs: Record<string, unknown>,
@@ -156,6 +263,108 @@ function executeCoreNode(
     return {
       true: Boolean(inputs.condition),
       false: !Boolean(inputs.condition),
+    };
+  }
+
+  if (
+    type ===
+    "time.local_minutes"
+  ) {
+    const p =
+      localTemporalParts(
+        inputs.time,
+        String(
+          cfg.timezone ??
+            "UTC",
+        ),
+      );
+
+    return {
+      value:
+        p
+          ? p.hour * 60 +
+            p.minute +
+            p.second / 60
+          : 0,
+    };
+  }
+
+  if (
+    type ===
+    "time.local_date"
+  ) {
+    const p =
+      localTemporalParts(
+        inputs.time,
+        String(
+          cfg.timezone ??
+            "UTC",
+        ),
+      );
+
+    return {
+      value:
+        p
+          ? [
+              String(
+                p.year,
+              ).padStart(
+                4,
+                "0",
+              ),
+
+              String(
+                p.month,
+              ).padStart(
+                2,
+                "0",
+              ),
+
+              String(
+                p.day,
+              ).padStart(
+                2,
+                "0",
+              ),
+            ].join("-")
+          : null,
+    };
+  }
+
+  if (
+    type ===
+    "time.day_of_week"
+  ) {
+    const p =
+      localTemporalParts(
+        inputs.time,
+        String(
+          cfg.timezone ??
+            "UTC",
+        ),
+      );
+
+    const map:
+      Record<
+        string,
+        number
+      > = {
+        Mon: 1,
+        Tue: 2,
+        Wed: 3,
+        Thu: 4,
+        Fri: 5,
+        Sat: 6,
+        Sun: 7,
+      };
+
+    return {
+      value:
+        p
+          ? map[
+              p.weekday
+            ] ?? 0
+          : 0,
     };
   }
 
