@@ -38,7 +38,6 @@ import {
 
 import {
   normalizeResponsibilityConfig,
-  ensureResponsibilityActions,
 } from "../platform/responsibility";
 
 import {
@@ -92,21 +91,19 @@ async function buildWorkspace(
       userId,
     );
 
-  if (options.ensureActions) {
-    for (const responsibility of resolved) {
-      await ensureResponsibilityActions(
-        db,
-        {
-          id:
-            responsibility.id,
-          key:
-            responsibility.key,
-          title:
-            responsibility.title,
-        },
-      );
-    }
-  }
+  /*
+   * BRIXTA_FAST_BOOTSTRAP_V1
+   *
+   * Compatibility note:
+   * `options.ensureActions` remains accepted so existing callers do not
+   * break, but bootstrap is now strictly read-only.
+   *
+   * Responsibility CRUD action definitions are synchronized on the
+   * Responsibility create/update/publish write paths. Repeating those
+   * UPSERT/lookup loops here on every employee bootstrap was redundant
+   * hot-path database work.
+   */
+  void options;
 
   const workflow =
     await getWorkflowBootstrapForUser(

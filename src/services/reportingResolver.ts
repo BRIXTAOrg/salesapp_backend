@@ -326,6 +326,10 @@ async function getPerson(
 export async function getReportingPolicy(
   db: AppDatabase,
   userId: number,
+  options: {
+    legacyReportsToIdKnown?: boolean;
+    legacyReportsToId?: number | null;
+  } = {},
 ): Promise<ReportingPolicy> {
   const [stored] =
     await db
@@ -352,22 +356,32 @@ export async function getReportingPolicy(
 
   /*
    * Compatibility with historical reports_to_id records.
+   *
+   * resolveReportingManager() already loads the subject employee. When
+   * supplied, reuse that reportsToId instead of SELECTing the same row a
+   * second time.
    */
-  const employee =
-    await getPerson(
-      db,
-      userId,
-    );
+  const legacyReportsToId =
+    options
+      .legacyReportsToIdKnown
+      ? options.legacyReportsToId
+      : (
+          await getPerson(
+            db,
+            userId,
+          )
+        )?.reportsToId ??
+        null;
 
   if (
-    employee?.reportsToId
+    legacyReportsToId
   ) {
     return {
       version: 1,
       mode:
         "specific_user",
       userId:
-        employee.reportsToId,
+        legacyReportsToId,
     };
   }
 
@@ -385,8 +399,18 @@ export async function resolveReportingManager(
   db: AppDatabase,
   userId: number,
   policyOverride?: unknown,
+  options: {
+    preloadedSubject?: {
+      id: number;
+      department: string | null;
+      area: string | null;
+      zone: string | null;
+      reportsToId: number | null;
+    } | null;
+  } = {},
 ) {
   const employee =
+    options.preloadedSubject ??
     await getPerson(
       db,
       userId,
@@ -397,6 +421,14 @@ export async function resolveReportingManager(
       ? await getReportingPolicy(
           db,
           userId,
+          {
+            legacyReportsToIdKnown:
+              true,
+            legacyReportsToId:
+              employee
+                ?.reportsToId ??
+              null,
+          },
         )
       : normalizeReportingPolicy(
           policyOverride,

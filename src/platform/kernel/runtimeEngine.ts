@@ -387,15 +387,49 @@ async function buildWorld(
     input.record?.userId ??
     input.actorUserId;
 
-  const [actorUser, subjectUser] = await Promise.all([
-    userSummary(db, input.actorUserId),
-    userSummary(db, subjectUserId),
-  ]);
+  /*
+   * BRIXTA_KERNEL_USER_DEDUP_V1
+   *
+   * Normal employee runtime has actor === subject. Do not SELECT the same
+   * employee twice.
+   */
+  const actorUser =
+    await userSummary(
+      db,
+      input.actorUserId,
+    );
+
+  const subjectUser =
+    subjectUserId ===
+    input.actorUserId
+      ? actorUser
+      : await userSummary(
+          db,
+          subjectUserId,
+        );
 
   const managerResolution =
     await resolveReportingManager(
       db,
       subjectUserId,
+      undefined,
+      {
+        preloadedSubject:
+          subjectUser
+            ? {
+                id:
+                  subjectUser.id,
+                department:
+                  subjectUser.department,
+                area:
+                  subjectUser.area,
+                zone:
+                  subjectUser.zone,
+                reportsToId:
+                  subjectUser.reportsToId,
+              }
+            : null,
+      },
     );
 
   const manager =
@@ -628,6 +662,92 @@ function actionAvailableInState(
 }
 
 /*
+ * BRIXTA_KERNEL_PROJECTED_ACTOR_AUTH_V1
+ *
+ * buildWorld() has already resolved every authored actor server-side and
+ * stored the result in world.actors. Re-querying roles/participants/
+ * reporting policy for every button and output is redundant.
+ *
+ * This helper does NOT trust the client. It only reads the server-built
+ * runtime world created immediately above this availability calculation.
+ */
+function projectedActorAllowsUser(
+  value: unknown,
+  userId: number,
+) {
+  if (
+    Array.isArray(
+      value,
+    )
+  ) {
+    return value.some(
+      (item) => {
+        if (
+          Number(item) ===
+          userId
+        ) {
+          return true;
+        }
+
+        const raw =
+          objectValue(
+            item,
+          );
+
+        return (
+          Number(
+            raw.id ??
+            raw.userId,
+          ) ===
+          userId
+        );
+      },
+    );
+  }
+
+  const raw =
+    objectValue(
+      value,
+    );
+
+  return (
+    Number(
+      raw.id ??
+      raw.userId,
+    ) ===
+    userId
+  );
+}
+
+function projectedActionActorCanAct(
+  action: KernelAction,
+  world: KernelRuntimeWorld,
+) {
+  if (action.actorId) {
+    return projectedActorAllowsUser(
+      world.actors[
+        action.actorId
+      ],
+      world.actorUserId,
+    );
+  }
+
+  if (
+    !isDecisionActionKind(
+      action.kind,
+    )
+  ) {
+    return true;
+  }
+
+  return projectedActorAllowsUser(
+    world.actors
+      .current_manager,
+    world.actorUserId,
+  );
+}
+
+/*
  * AUTHORITY PRECEDENCE
  *
  * 1. Explicit actorId authored by Pixel Reality / Kernel:
@@ -705,6 +825,10 @@ async function availablePossibilities(
         !evaluateConditionGroup(
           world,
           possibility.action.requires,
+        ) ||
+        !actionAvailableInState(
+          possibility.action,
+          world,
         )
       ) {
         continue;
@@ -713,8 +837,8 @@ async function availablePossibilities(
       /*
        * SERVER-AUTHORITATIVE AVAILABILITY.
        *
-       * If a time/business policy says the action is unavailable,
-       * the backend does not even advertise it to Flutter.
+       * Pure state/condition checks above run first so an unavailable state
+       * never pays for a database-backed business guard.
        */
       const availabilityGuardFailure =
         await enforceSubmissionGuards(
@@ -749,13 +873,7 @@ async function availablePossibilities(
       }
 
       if (
-        actionAvailableInState(
-          possibility.action,
-          world,
-        ) &&
-        await actionActorCanAct(
-          db,
-          kernel,
+        projectedActionActorCanAct(
           possibility.action,
           world,
         )
@@ -769,18 +887,15 @@ async function availablePossibilities(
 
     const actorAllowed =
       possibility.output.actorIds.length === 0 ||
-      (
-        await Promise.all(
-          possibility.output.actorIds.map((actorId) =>
-            actorCanAct(
-              db,
-              kernel,
-              actorId,
-              world,
-            ),
+      possibility.output.actorIds.some(
+        (actorId) =>
+          projectedActorAllowsUser(
+            world.actors[
+              actorId
+            ],
+            world.actorUserId,
           ),
-        )
-      ).some(Boolean);
+      );
 
     const stateAllowed =
       possibility.output.stateIds.length === 0 ||
