@@ -7,3 +7,13 @@ dist
 dist/
 service-account.json
 .vscode
+
+# BRIXTA repository hygiene
+.DS_Store
+.env*
+!.env.example
+/.brixta-backups/
+/.brixta-local-backups/
+/graphify-out/
+*.tsbuildinfo
+npm-debug.log*
