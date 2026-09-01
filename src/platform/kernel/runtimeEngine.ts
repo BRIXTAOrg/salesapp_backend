@@ -2319,6 +2319,9 @@ export async function executeKernelAction(
     clientMutationId?: string | null;
     clientCreatedAt?: string | null;
     workflowInstanceId?: string | null;
+
+    clientExecutedPixelNodeIds?: string[];
+
     device?: KernelDeviceContext;
   },
 ): Promise<KernelRuntimeResult<Record<string, unknown>>> {
@@ -2967,12 +2970,79 @@ export async function executeKernelAction(
     },
   );
 
+  const clientSafeResponseKinds =
+    new Set([
+      "ui_animate",
+      "ui_show",
+      "ui_hide",
+      "ui_play",
+      "haptic",
+      "device_sound",
+      "device_ring",
+      "device_notification",
+    ]);
+
+  const alreadyExecutedOnDevice =
+    new Set(
+      (
+        input.clientExecutedPixelNodeIds ??
+        []
+      ).map(
+        String,
+      ),
+    );
+
+  /*
+   * The complete published Pixel graph has already
+   * been evaluated by the backend above.
+   *
+   * Only transient feedback already performed by
+   * this requesting phone is removed from the
+   * response to prevent duplicate playback.
+   *
+   * Business effects are NEVER skipped.
+   */
+  const responseEffects =
+    appliedEffects.filter(
+      (
+        effect,
+      ) => {
+        if (
+          effect.source !==
+          "pixel_logic"
+        ) {
+          return true;
+        }
+
+        const nodeId =
+          String(
+            effect.nodeId ??
+            "",
+          );
+
+        const kind =
+          String(
+            effect.kind ??
+            "",
+          );
+
+        return !(
+          alreadyExecutedOnDevice.has(
+            nodeId,
+          ) &&
+          clientSafeResponseKinds.has(
+            kind,
+          )
+        );
+      },
+    );
+
   return {
     ok: true,
     value: {
       record,
       eventIds: [...eventIds],
-      effects: appliedEffects,
+      effects: responseEffects,
       workflowInstanceIds:
         transition.startedWorkflowInstanceIds.length
           ? transition.startedWorkflowInstanceIds

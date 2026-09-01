@@ -62,12 +62,23 @@ export type PixelLogicNodeSpec = {
   configFields?: PixelLogicConfigField[];
 };
 
+export type PixelLogicExecutionPlacement =
+  | "auto"
+  | "device"
+  | "server";
+
+export type PixelLogicExecution = {
+  placement: PixelLogicExecutionPlacement;
+  rationale?: string;
+};
+
 export type PixelLogicNode = {
   id: string;
   type: string;
   label?: string;
   position: { x: number; y: number };
   config: Record<string, unknown>;
+  execution?: PixelLogicExecution;
 };
 
 export type PixelLogicEdge = {
@@ -151,6 +162,31 @@ export function normalizePixelLogicProgram(
               y: Number.isFinite(Number(position.y)) ? Number(position.y) : 0,
             },
             config: asObject(node.config),
+
+            execution: (() => {
+              const rawExecution =
+                asObject(
+                  node.execution,
+                );
+
+              const placement =
+                rawExecution.placement ===
+                    "device" ||
+                rawExecution.placement ===
+                    "server"
+                  ? rawExecution.placement
+                  : "auto";
+
+              return {
+                placement,
+
+                rationale:
+                  typeof rawExecution.rationale ===
+                  "string"
+                    ? rawExecution.rationale
+                    : undefined,
+              };
+            })(),
           } satisfies PixelLogicNode;
         })
         .filter((item): item is NonNullable<typeof item> => item !== null)

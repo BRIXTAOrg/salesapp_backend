@@ -242,6 +242,17 @@ export function registerRuntimeRoutes(
           clientMutationId: String(req.body?.clientMutationId ?? "").trim() || null,
           clientCreatedAt: String(req.body?.clientCreatedAt ?? "").trim() || null,
           workflowInstanceId: String(req.body?.workflowInstanceId ?? "").trim() || null,
+
+          clientExecutedPixelNodeIds:
+            Array.isArray(
+              req.body
+                ?.clientExecutedPixelNodeIds,
+            )
+              ? req.body.clientExecutedPixelNodeIds
+                  .map(String)
+                  .slice(0, 128)
+              : [],
+
           device: touched.context,
         });
 
