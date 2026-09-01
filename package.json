@@ -13,7 +13,8 @@
     "check": "tsc",
     "db:push": "drizzle-kit push",
     "stress:kernel": "tsx stress/brixta_kernel_stress.ts",
-    "check:full": "npm run check && npm run build && git diff --check"
+    "check:full": "npm run check && npm run build && git diff --check",
+    "perf:e2e": "python3 scripts/perf-e2e.py"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.4",

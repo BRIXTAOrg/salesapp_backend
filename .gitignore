@@ -17,3 +17,9 @@ service-account.json
 /graphify-out/
 *.tsbuildinfo
 npm-debug.log*
+
+# Local secrets / generated BRIXTA artifacts
+.env.local
+.env.*
+.brixta-backups/
+graphify-out/
