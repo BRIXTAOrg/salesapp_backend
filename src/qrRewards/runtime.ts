@@ -127,6 +127,35 @@ type Voucher = {
   validityPolicy:
     unknown;
 
+  /*
+   * Physical distribution/custody binding.
+   *
+   * These are authoritative for voucher_bound_entity.
+   */
+  boundEntityTypeId:
+    number | null;
+
+  boundEntityTypeName:
+    string | null;
+
+  boundEntityRecordId:
+    string | null;
+
+  boundEntityExternalKey:
+    string | null;
+
+  boundEntityLabel:
+    string | null;
+
+  boundEntityRecordStatus:
+    string | null;
+
+  boundEntityTypeActive:
+    boolean | null;
+
+  boundEntitySourceTrace:
+    unknown;
+
   entityTypeId:
     number | null;
 
@@ -547,6 +576,30 @@ async function findVoucher(
         rb.validity_policy
           AS "validityPolicy",
 
+        veb.entity_type_id
+          AS "boundEntityTypeId",
+
+        veb.entity_type_label_snapshot
+          AS "boundEntityTypeName",
+
+        veb.entity_record_id
+          AS "boundEntityRecordId",
+
+        veb.entity_external_key_snapshot
+          AS "boundEntityExternalKey",
+
+        veb.entity_label_snapshot
+          AS "boundEntityLabel",
+
+        veb.source_trace_snapshot
+          AS "boundEntitySourceTrace",
+
+        bound_er.status
+          AS "boundEntityRecordStatus",
+
+        bound_et.is_active
+          AS "boundEntityTypeActive",
+
         a.entity_type_id
           AS "entityTypeId",
 
@@ -602,6 +655,33 @@ async function findVoucher(
           AS et
             ON et.id =
               a.entity_type_id
+
+      /*
+       * Current physical custody/distribution Entity.
+       *
+       * IMPORTANT:
+       * This is not derived from browser input.
+       */
+      LEFT JOIN
+        qr_reward_voucher_entity_bindings
+          AS veb
+            ON veb.voucher_id =
+              v.id
+
+            AND veb.status =
+              'active'
+
+      LEFT JOIN
+        entity_types
+          AS bound_et
+            ON bound_et.id =
+              veb.entity_type_id
+
+      LEFT JOIN
+        entity_records
+          AS bound_er
+            ON bound_er.id =
+              veb.entity_record_id
 
       WHERE
         v.token_hash =
@@ -933,6 +1013,101 @@ async function resolveEntity(
     return {
       entity:
         null,
+    };
+  }
+
+
+  /*
+   * TRACEABILITY MODE
+   *
+   * The claimant does NOT choose the Dealer.
+   *
+   * requestedId is intentionally ignored.
+   * The active physical QR binding is authoritative.
+   */
+  if (
+    mode ===
+    "voucher_bound_entity"
+  ) {
+    if (
+      !voucher
+        .boundEntityTypeId ||
+      !voucher
+        .boundEntityTypeName ||
+      !voucher
+        .boundEntityRecordId ||
+      !voucher
+        .boundEntityLabel ||
+      voucher
+        .boundEntityRecordStatus !==
+        "active" ||
+      voucher
+        .boundEntityTypeActive ===
+        false ||
+      !voucher
+        .campaignId
+    ) {
+      return {
+        error:
+          "entity_invalid",
+      };
+    }
+
+    /*
+     * A physical QR may only resolve to an Entity that the
+     * CURRENT Campaign actually authorises.
+     */
+    const eligible =
+      await db.execute(sql`
+        SELECT
+          1
+
+        FROM
+          qr_reward_campaign_entities
+
+        WHERE
+          campaign_id =
+            ${voucher.campaignId}::uuid
+
+          AND entity_record_id =
+            ${voucher.boundEntityRecordId}::uuid
+
+        LIMIT 1
+      `);
+
+    if (
+      !eligible.rows[0]
+    ) {
+      return {
+        error:
+          "entity_invalid",
+      };
+    }
+
+    return {
+      entity: {
+        entityTypeId:
+          Number(
+            voucher
+              .boundEntityTypeId,
+          ),
+
+        entityTypeName:
+          voucher
+            .boundEntityTypeName,
+
+        entityRecordId:
+          voucher
+            .boundEntityRecordId,
+
+        /*
+         * Use the immutable binding snapshot, not today's
+         * mutable Entity display label.
+         */
+        entityLabel:
+          voucher
+            .boundEntityLabel,
+      },
     };
   }
 
@@ -1395,6 +1570,12 @@ export async function claimQrReward(
     userId?:
       number | null;
 
+    /*
+     * Used only for legacy claimant_selects.
+     *
+     * Explicitly ignored for voucher_bound_entity.
+     * Physical QR custody wins over browser input.
+     */
     entityRecordId?:
       string | null;
   },
