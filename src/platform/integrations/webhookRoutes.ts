@@ -579,6 +579,18 @@ export default function setupIntegrationWebhookRoutes(
                   "",
                 );
 
+              const fallbackProviderStatus =
+                String(
+                  event.fallbackStatusPath
+                    ? readPath(
+                        payload,
+                        String(
+                          event.fallbackStatusPath,
+                        ),
+                      )
+                    : "",
+                );
+
               const statusMap =
                 objectValue(
                   event.statusMap,
@@ -591,6 +603,13 @@ export default function setupIntegrationWebhookRoutes(
                   ] ??
                   statusMap[
                     providerStatus
+                      .toLowerCase()
+                  ] ??
+                  statusMap[
+                    fallbackProviderStatus
+                  ] ??
+                  statusMap[
+                    fallbackProviderStatus
                       .toLowerCase()
                   ] ??
                   "",

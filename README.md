@@ -1,20 +1,36 @@
-# SUPABASE - db.brixta.site
-DATABASE_URL='postgresql://postgres.supatenant:84095c2f6f0ae69dfa46e2f518783d86@122.176.219.242:55005/postgres'
-#DATABASE_URL='postgresql://postgres.supatenant:2a94a545ecbfb78f5d9a660f977134bf@100.106.235.121:55005/postgres'
-JWT_SECRET=5e6ba5f06c160f9e95bc4cd1f3c761b934f1ae6fec089617a99d8c7cf65d768f
+# BRIXTA Sales App Backend
 
-# Server Configuration
-PORT=8000
-NODE_ENV=development
+BRIXTA Responsibility Runtime and QR Rewards backend.
 
-# supabase photo storage
-SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoiYW5vbiIsImlzcyI6InN1cGFiYXNlIiwiaWF0IjoxNzc0MDY1MjM3LCJleHAiOjE5MzE3NDUyMzd9.O7FZiAmEBq66zRigFK4X7Gyd73Coi6I50xpkld_odJo
-SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIiwiaXNzIjoic3VwYWJhc2UiLCJpYXQiOjE3NzQwNjUyMzcsImV4cCI6MTkzMTc0NTIzN30.ra1rEmoGike42pejRT1r1zMa8qA9EAWMMVlTmcusYX4
-SUPABASE_URL=https://db.brixta.site
-SUPABASE_BUCKET_NAME=kamdhenu-photos
-ADMIN_SERVICE_SECRET=kamdhenu-admin-8f3d2a91c7e64f1bb4a2
-INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=
-INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=
-INFISICAL_PROJECT_ID=
-INFISICAL_PROJECT_SLUG=
+## Security
 
+Never commit credentials to this repository.
+
+Runtime secrets must be supplied through the deployment environment or
+approved secret manager.
+
+Required core environment variables include:
+
+- DATABASE_URL
+- JWT_SECRET
+- SUPABASE_URL
+- SUPABASE_ANON_KEY
+- SUPABASE_SERVICE_ROLE_KEY
+- SUPABASE_BUCKET_NAME
+- ADMIN_SERVICE_SECRET
+
+QR Rewards / Integration Runtime additionally uses:
+
+- BRIXTA_INTEGRATION_SECRET_KEY
+- BRIXTA_EXTERNAL_SESSION_SECRET
+- BRIXTA_CLAIMANT_HASH_KEY
+- BRIXTA_PII_SECRET_KEY
+
+For the QR Rewards edition:
+
+- BRIXTA_BACKEND_EDITION=qr-voucher-rewards
+- BRIXTA_INTEGRATION_WORKER=1
+- BRIXTA_PAYOUT_PROVIDER=sandbox
+
+Set BRIXTA_PAYOUT_PROVIDER=integration only after a published payout
+Integration has passed sandbox certification.

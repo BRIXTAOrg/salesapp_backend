@@ -43,6 +43,7 @@ COPY --from=dependencies /app/node_modules ./node_modules
 
 # 2. Copy the built source code from the 'builder' stage
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/scripts ./scripts
 
 # 3. Copy package.json for the 'start' script to work
 COPY package.json ./
@@ -51,4 +52,4 @@ COPY package.json ./
 EXPOSE 8000
 
 # Use the 'start' script from package.json to run the app
-CMD [ "npm", "run", "start" ]
+CMD [ "npm", "run", "start:qr-rewards" ]
