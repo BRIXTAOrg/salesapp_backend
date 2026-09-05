@@ -6,7 +6,7 @@
  * to render them and the backend decides how to authorize/execute them.
  */
 export const PLATFORM_PRIMITIVES = {
-  version: "2026.08.2-kernel3",
+  version: "2026.09.1-kernel3-services",
   kernelVersion: 3,
 
   input: [
@@ -110,6 +110,7 @@ export const PLATFORM_PRIMITIVES = {
     "trigger_action",
     "trigger_responsibility",
     "append_history",
+    "service_execute",
   ],
 
   workflow: [
@@ -124,6 +125,9 @@ export const PLATFORM_PRIMITIVES = {
     deviceContext: true,
     offlineSyncRevision: true,
     workflowGate: true,
+    publicExternalRuntime: true,
+    integrationServiceQueue: true,
+    serverServiceExecution: true,
   },
 } as const;
 
