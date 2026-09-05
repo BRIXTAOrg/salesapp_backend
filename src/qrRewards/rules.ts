@@ -351,6 +351,8 @@ export async function evaluateRulebook(
 
 
   if (
+    fraud.requireValidEntity ===
+      true &&
     fraud.requireEntity ===
       true &&
     !input.context

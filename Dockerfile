@@ -52,4 +52,4 @@ COPY package.json ./
 EXPOSE 8000
 
 # Use the 'start' script from package.json to run the app
-CMD [ "npm", "run", "start" ]
+CMD [ "npm", "run", "start:qr-rewards" ]

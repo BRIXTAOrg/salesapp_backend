@@ -4,6 +4,10 @@ import type {
 } from "express";
 
 import {
+  sql,
+} from "drizzle-orm";
+
+import {
   withTenantSchema,
 } from "../db/db";
 
@@ -31,6 +35,15 @@ function validTenant(
   value: string,
 ) {
   return /^[a-z][a-z0-9_]{0,62}$/.test(
+    value,
+  );
+}
+
+
+function validUuid(
+  value: string,
+) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
     value,
   );
 }
@@ -660,4 +673,350 @@ export default function setupPublicExternalRuntimeRoutes(
       }
     },
   );
+
+  /*
+   * PUBLIC_EXTERNAL_SERVICE_STATUS_V1
+   *
+   * Lets Flutter Web observe the result of a service_execute effect
+   * without exposing provider credentials, request payloads or raw
+   * provider responses.
+   */
+  app.get(
+    "/api/public/runtime/:tenant/:responsibilityKey/service-requests/:requestId",
+    async (
+      req,
+      res,
+    ) => {
+      const tenant =
+        String(
+          req.params.tenant,
+        );
+
+      const responsibilityKey =
+        String(
+          req.params.responsibilityKey,
+        );
+
+      const requestId =
+        String(
+          req.params.requestId,
+        );
+
+      if (
+        !validTenant(
+          tenant,
+        ) ||
+        !validUuid(
+          requestId,
+        )
+      ) {
+        return res
+          .status(404)
+          .json({
+            success:
+              false,
+
+            error:
+              "Not found.",
+          });
+      }
+
+      const external =
+        verifyExternalSession(
+          String(
+            req.headers[
+              "x-brixta-external-session"
+            ] ??
+            "",
+          ),
+        );
+
+      if (
+        !external ||
+        external.tenant !==
+          tenant ||
+        external
+          .responsibilityKey !==
+          responsibilityKey
+      ) {
+        return res
+          .status(401)
+          .json({
+            success:
+              false,
+
+            error:
+              "External runtime session is missing or invalid.",
+          });
+      }
+
+      try {
+        const result =
+          await withTenantSchema(
+            tenant,
+            async (
+              db,
+            ) => {
+              const rate =
+                await consumePublicRateLimit(
+                  db,
+                  {
+                    scope:
+                      `external-service-status:${responsibilityKey}`,
+
+                    identity:
+                      `${clientIdentity(req)}:${external.sessionId}`,
+
+                    limit:
+                      180,
+
+                    windowSeconds:
+                      60,
+                  },
+                );
+
+              if (
+                !rate.allowed
+              ) {
+                return {
+                  status:
+                    429,
+
+                  body: {
+                    success:
+                      false,
+
+                    error:
+                      "Too many requests.",
+                  },
+                };
+              }
+
+              const rows =
+                await db.execute(sql`
+                  SELECT
+                    id,
+
+                    capability,
+
+                    status,
+
+                    attempts,
+
+                    last_error
+                      AS "lastError",
+
+                    completed_at
+                      AS "completedAt",
+
+                    updated_at
+                      AS "updatedAt"
+
+                  FROM
+                    integration_service_requests
+
+                  WHERE
+                    id =
+                      ${requestId}::uuid
+
+                    AND
+                    source_metadata ->>
+                      'type' =
+                      'external_runtime'
+
+                    AND
+                    source_metadata ->>
+                      'externalSessionId' =
+                      ${external.sessionId}
+
+                    AND
+                    source_metadata ->>
+                      'responsibilityKey' =
+                      ${responsibilityKey}
+
+                  LIMIT 1
+                `);
+
+              const row =
+                rows.rows[0] as
+                  | Record<
+                      string,
+                      unknown
+                    >
+                  | undefined;
+
+              if (
+                !row
+              ) {
+                return {
+                  status:
+                    404,
+
+                  body: {
+                    success:
+                      false,
+
+                    error:
+                      "Service request not found.",
+                  },
+                };
+              }
+
+              const serviceStatus =
+                String(
+                  row.status ??
+                  "",
+                );
+
+              const lastError =
+                String(
+                  row.lastError ??
+                  "",
+                );
+
+              const lowerError =
+                lastError
+                  .toLowerCase();
+
+              const succeeded =
+                serviceStatus ===
+                "succeeded";
+
+              const failed =
+                serviceStatus ===
+                  "failed" ||
+                serviceStatus ===
+                  "uncertain";
+
+              let code:
+                string | null =
+                null;
+
+              if (
+                failed
+              ) {
+                if (
+                  lowerError.includes(
+                    "no published api integration",
+                  ) ||
+                  lowerError.includes(
+                    "no implementation is bound",
+                  )
+                ) {
+                  code =
+                    "PROVIDER_NOT_CONFIGURED";
+                } else if (
+                  lowerError.includes(
+                    "timed out",
+                  )
+                ) {
+                  code =
+                    "PROVIDER_TIMEOUT";
+                } else if (
+                  lowerError.includes(
+                    "provider returned http",
+                  )
+                ) {
+                  code =
+                    "PROVIDER_REJECTED";
+                } else {
+                  code =
+                    "PROVIDER_UNAVAILABLE";
+                }
+              }
+
+              return {
+                status:
+                  200,
+
+                body: {
+                  success:
+                    true,
+
+                  service: {
+                    id:
+                      String(
+                        row.id,
+                      ),
+
+                    capability:
+                      String(
+                        row.capability,
+                      ),
+
+                    status:
+                      serviceStatus,
+
+                    attempts:
+                      Number(
+                        row.attempts ??
+                        0,
+                      ),
+
+                    terminal:
+                      succeeded ||
+                      failed,
+
+                    outcome:
+                      succeeded
+                        ? "succeeded"
+                        : failed
+                          ? "failed"
+                          : "processing",
+
+                    code,
+
+                    /*
+                     * Intentionally safe public text.
+                     * Never return lastError/provider response here.
+                     */
+                    message:
+                      succeeded
+                        ? "UPI verification completed."
+                        : failed
+                          ? "UPI verification is unavailable because the payment provider could not complete the request."
+                          : "UPI verification is being processed.",
+
+                    updatedAt:
+                      row.updatedAt ??
+                      null,
+                  },
+                },
+              };
+            },
+          );
+
+        res.setHeader(
+          "Cache-Control",
+          "no-store",
+        );
+
+        return res
+          .status(
+            result.status,
+          )
+          .json(
+            result.body,
+          );
+      } catch (
+        error
+      ) {
+        console.error(
+          "External service status failed:",
+          error,
+        );
+
+        return res
+          .status(500)
+          .json({
+            success:
+              false,
+
+            error:
+              "Unable to read service status.",
+          });
+      }
+    },
+  );
+
 }

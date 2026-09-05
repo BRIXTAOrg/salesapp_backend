@@ -321,6 +321,123 @@ function piiSecret() {
 }
 
 
+
+/*
+ * Provider-facing transfer IDs must remain deterministic and safe
+ * across validation, payout creation, status lookup and webhook
+ * reconciliation.
+ *
+ * Cashfree V2 permits a maximum 40-character transfer ID.
+ */
+function payoutProviderTransferId(
+  claimId: string,
+) {
+  const compact =
+    claimId.replace(
+      /[^a-zA-Z0-9]/g,
+      "",
+    );
+
+  return `brx${compact}`.slice(
+    0,
+    40,
+  );
+}
+
+
+function payoutLifecycle(
+  mapped:
+    Record<string, unknown>,
+):
+  | "processing"
+  | "paid"
+  | "failed"
+  | "reversed" {
+  const status =
+    String(
+      mapped.status ??
+      "",
+    )
+      .trim()
+      .toLowerCase();
+
+  const statusCode =
+    String(
+      mapped.statusCode ??
+      mapped.status_code ??
+      "",
+    )
+      .trim()
+      .toLowerCase();
+
+  if (
+    [
+      "reversed",
+      "reverse",
+    ].includes(
+      status,
+    )
+  ) {
+    return "reversed";
+  }
+
+  if (
+    [
+      "failed",
+      "failure",
+      "rejected",
+      "cancelled",
+      "canceled",
+    ].includes(
+      status,
+    )
+  ) {
+    return "failed";
+  }
+
+  /*
+   * Cashfree V2:
+   *
+   * SUCCESS + SENT_TO_BENEFICIARY is NOT terminal success.
+   * SUCCESS + COMPLETED is terminal.
+   */
+  if (
+    statusCode ===
+      "completed" &&
+    [
+      "success",
+      "successful",
+      "paid",
+      "completed",
+    ].includes(
+      status,
+    )
+  ) {
+    return "paid";
+  }
+
+  /*
+   * Providers without a second-level status code can still
+   * declare a terminal state through their mapped status.
+   */
+  if (
+    !statusCode &&
+    [
+      "success",
+      "successful",
+      "paid",
+      "completed",
+    ].includes(
+      status,
+    )
+  ) {
+    return "paid";
+  }
+
+  return "processing";
+}
+
+
 async function findVoucher(
   db: AppDatabase,
   tokenHash: string,
@@ -1871,6 +1988,28 @@ export async function claimQrReward(
     );
 
 
+
+  const externalPayout =
+    process.env
+      .BRIXTA_PAYOUT_PROVIDER ===
+    "integration";
+
+  const initialPayoutProvider =
+    externalPayout
+      ? "integration"
+      : "brixta_sandbox";
+
+  const initialServiceCapability =
+    externalPayout
+      ? "upi.validate"
+      : "payout.request";
+
+  const initialServiceIdempotencyKey =
+    externalPayout
+      ? `payout-validate:${claimId}`
+      : payoutRequestId;
+
+
   await db.execute(sql`
     INSERT INTO
       qr_reward_payouts (
@@ -1898,7 +2037,7 @@ export async function claimQrReward(
 
       ${claimId}::uuid,
 
-      'brixta_sandbox',
+      ${initialPayoutProvider},
 
       ${rewardAmountMinor},
 
@@ -1927,19 +2066,21 @@ export async function claimQrReward(
       db,
       {
         capability:
-          "payout.request",
+          initialServiceCapability,
 
         /*
-         * Pixel/public clients never provide authoritative amount.
+         * Financial authority stays server-side.
          *
-         * Queue receives claimId only.
+         * Browser/Pixel only supplied the claim inputs.
+         * Provider validation/payout receives claimId first and
+         * derives the immutable payout intent from storage.
          */
         request: {
           claimId,
         },
 
         idempotencyKey:
-          payoutRequestId,
+          initialServiceIdempotencyKey,
 
         source: {
           type:
@@ -1949,9 +2090,15 @@ export async function claimQrReward(
 
           voucherId:
             voucher.voucherId,
+
+          stage:
+            externalPayout
+              ? "beneficiary_validation"
+              : "payout",
         },
       },
     );
+
 
 
   return {
@@ -2182,6 +2329,58 @@ export function registerQrRewardServiceAdapters() {
               piiSecret(),
             );
 
+          const providerTransferId =
+            String(
+              input.providerTransferId ??
+              payoutProviderTransferId(
+                String(
+                  row.claimId,
+                ),
+              ),
+            );
+
+          const transferToken =
+            String(
+              input.transferToken ??
+              "",
+            ).trim();
+
+          /*
+           * Store our deterministic provider reference BEFORE
+           * the external HTTP request.
+           *
+           * If the connection dies after Cashfree receives it,
+           * payout.getStatus still knows which transfer to query.
+           */
+          if (
+            process.env
+              .BRIXTA_PAYOUT_PROVIDER ===
+            "integration"
+          ) {
+            await db.execute(sql`
+              UPDATE
+                qr_reward_payouts
+
+              SET
+                provider =
+                  'integration',
+
+                provider_transfer_ref =
+                  ${providerTransferId},
+
+                status =
+                  'processing',
+
+                updated_at =
+                  now()
+
+              WHERE
+                id =
+                  ${String(row.payoutId)}::uuid
+            `);
+          }
+
+
 
           return {
             payoutId:
@@ -2199,7 +2398,19 @@ export function registerQrRewardServiceAdapters() {
                 row.requestId,
               ),
 
+            providerTransferId,
+
+            transferToken:
+              transferToken ||
+              undefined,
+
             amountMinor,
+
+            amountText:
+              (
+                amountMinor /
+                100
+              ).toFixed(2),
 
             amount:
               amountMinor /
@@ -2354,45 +2565,14 @@ export function registerQrRewardServiceAdapters() {
               result.mapped,
             );
 
-          const rawStatus =
-            String(
-              mapped.status ??
-              "",
-            )
-              .trim()
-              .toLowerCase();
-
+          const status =
+            payoutLifecycle(
+              mapped,
+            );
 
           const paid =
-            [
-              "paid",
-              "success",
-              "successful",
-              "completed",
-            ].includes(
-              rawStatus,
-            );
-
-
-          const failed =
-            [
-              "failed",
-              "failure",
-              "rejected",
-              "cancelled",
-              "canceled",
-            ].includes(
-              rawStatus,
-            );
-
-
-          const status =
-            paid
-              ? "paid"
-              : failed
-                ? "failed"
-                : "processing";
-
+            status ===
+            "paid";
 
           const providerReference =
             String(
@@ -2505,9 +2685,149 @@ export function registerQrRewardServiceAdapters() {
   registerServiceAdapter(
     "upi.validate",
     {
+      /*
+       * BRIXTA sandbox:
+       *   local syntax validation.
+       *
+       * Integration mode:
+       *   use the published upi.validate provider operation.
+       */
       preferInternal:
         () =>
-          true,
+          process.env
+            .BRIXTA_PAYOUT_PROVIDER !==
+          "integration",
+
+      prepareInput:
+        async (
+          db,
+          raw,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const claimId =
+            String(
+              input.claimId ??
+              "",
+            ).trim();
+
+          /*
+           * Generic non-QR call.
+           */
+          if (
+            !claimId
+          ) {
+            const upi =
+              normalizeUpi(
+                String(
+                  input.upi ??
+                  input.vpa ??
+                  "",
+                ),
+              );
+
+            return {
+              ...input,
+              upi,
+              vpa:
+                upi,
+            };
+          }
+
+          /*
+           * QR Rewards financial path.
+           *
+           * Only claimId entered the queue. Load protected beneficiary
+           * and immutable payout intent here.
+           */
+          const result =
+            await db.execute(sql`
+              SELECT
+                id
+                  AS "payoutId",
+
+                claim_id
+                  AS "claimId",
+
+                request_id
+                  AS "requestId",
+
+                beneficiary_ciphertext
+                  AS "beneficiaryCiphertext"
+
+              FROM
+                qr_reward_payouts
+
+              WHERE
+                claim_id =
+                  ${claimId}::uuid
+
+              LIMIT 1
+            `);
+
+          const row =
+            result.rows[0] as
+              | Record<string, unknown>
+              | undefined;
+
+          if (
+            !row
+          ) {
+            throw new Error(
+              "Payout intent not found for UPI validation.",
+            );
+          }
+
+          const upi =
+            normalizeUpi(
+              decryptSecretBox(
+                String(
+                  row.beneficiaryCiphertext,
+                ),
+                piiSecret(),
+              ),
+            );
+
+          const providerTransferId =
+            payoutProviderTransferId(
+              claimId,
+            );
+
+          return {
+            payoutId:
+              String(
+                row.payoutId,
+              ),
+
+            claimId,
+
+            requestId:
+              String(
+                row.requestId,
+              ),
+
+            providerTransferId,
+
+            upi,
+
+            /*
+             * Provider-neutral convenience field.
+             * Cashfree maps this to vpa.
+             */
+            vpa:
+              upi,
+
+            beneficiary: {
+              type:
+                "upi",
+
+              upi,
+            },
+          };
+        },
 
       executeInternal:
         async (
@@ -2523,6 +2843,7 @@ export function registerQrRewardServiceAdapters() {
             normalizeUpi(
               String(
                 input.upi ??
+                input.vpa ??
                 "",
               ),
             );
@@ -2553,9 +2874,6 @@ export function registerQrRewardServiceAdapters() {
                   ? upi
                   : null,
 
-              /*
-               * Syntax validity is NOT proof of ownership.
-               */
               ownershipVerified:
                 false,
             },
@@ -2564,6 +2882,254 @@ export function registerQrRewardServiceAdapters() {
               valid,
             },
           };
+        },
+
+      applyResult:
+        async (
+          db,
+          raw,
+          result,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const claimId =
+            String(
+              input.claimId ??
+              "",
+            ).trim();
+
+          /*
+           * Generic validation service has nothing financial to
+           * continue.
+           */
+          if (
+            !claimId
+          ) {
+            return;
+          }
+
+          const payoutId =
+            String(
+              input.payoutId ??
+              "",
+            );
+
+          const mapped =
+            objectValue(
+              result.mapped,
+            );
+
+          const explicitValid =
+            mapped.valid;
+
+          const accountStatus =
+            String(
+              mapped.accountStatus ??
+              mapped.status ??
+              "",
+            )
+              .trim()
+              .toLowerCase();
+
+          const valid =
+            explicitValid ===
+              true ||
+            String(
+              explicitValid ??
+              "",
+            )
+              .toLowerCase() ===
+              "true" ||
+            accountStatus ===
+              "valid";
+
+          const transferToken =
+            String(
+              mapped.transferToken ??
+              mapped.token ??
+              "",
+            ).trim();
+
+          const external =
+            process.env
+              .BRIXTA_PAYOUT_PROVIDER ===
+            "integration";
+
+          /*
+           * External Verify-and-Pay providers must return the token
+           * needed by the payout stage.
+           */
+          if (
+            !valid ||
+            (
+              external &&
+              !transferToken
+            )
+          ) {
+            await db.execute(sql`
+              UPDATE
+                qr_reward_payouts
+
+              SET
+                provider =
+                  ${result.provider},
+
+                status =
+                  'failed',
+
+                last_error =
+                  ${
+                    !valid
+                      ? "UPI/VPA validation failed."
+                      : "Provider validation did not return a payout token."
+                  },
+
+                provider_response =
+                  ${JSON.stringify(result)}::jsonb,
+
+                updated_at =
+                  now()
+
+              WHERE
+                id =
+                  ${payoutId}::uuid
+            `);
+
+            return;
+          }
+
+          if (
+            !external
+          ) {
+            return;
+          }
+
+          const providerTransferId =
+            String(
+              input.providerTransferId ??
+              payoutProviderTransferId(
+                claimId,
+              ),
+            );
+
+          await db.execute(sql`
+            UPDATE
+              qr_reward_payouts
+
+            SET
+              provider =
+                ${result.provider},
+
+              provider_transfer_ref =
+                ${providerTransferId},
+
+              status =
+                'processing',
+
+              provider_response =
+                ${JSON.stringify(result)}::jsonb,
+
+              last_error =
+                NULL,
+
+              updated_at =
+                now()
+
+            WHERE
+              id =
+                ${payoutId}::uuid
+          `);
+
+          /*
+           * Validation succeeded. Continue the same immutable
+           * entitlement into payout.request.
+           */
+          await enqueueServiceRequest(
+            db,
+            {
+              capability:
+                "payout.request",
+
+              request: {
+                claimId,
+
+                transferToken,
+
+                providerTransferId,
+              },
+
+              idempotencyKey:
+                String(
+                  input.requestId,
+                ),
+
+              source: {
+                type:
+                  "validated_payout",
+
+                claimId,
+
+                payoutId,
+
+                validationProvider:
+                  result.provider,
+              },
+            },
+          );
+        },
+
+      applyError:
+        async (
+          db,
+          raw,
+          error,
+          terminal,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const claimId =
+            String(
+              input.claimId ??
+              "",
+            ).trim();
+
+          if (
+            !claimId
+          ) {
+            return;
+          }
+
+          await db.execute(sql`
+            UPDATE
+              qr_reward_payouts
+
+            SET
+              status =
+                ${
+                  terminal
+                    ? "failed"
+                    : "processing"
+                },
+
+              last_error =
+                ${error.message.slice(
+                  0,
+                  4000,
+                )},
+
+              updated_at =
+                now()
+
+            WHERE
+              claim_id =
+                ${claimId}::uuid
+          `);
         },
     },
   );
@@ -2671,6 +3237,18 @@ export function registerQrRewardServiceAdapters() {
             );
           }
 
+          const transferReference =
+            row.providerTransferRef
+              ? String(
+                  row.providerTransferRef,
+                )
+              : payoutProviderTransferId(
+                  String(
+                    row.claimId,
+                  ),
+                );
+
+
           return {
             payoutId:
               String(
@@ -2704,15 +3282,12 @@ export function registerQrRewardServiceAdapters() {
                 row.status,
               ),
 
+            providerTransferId:
+              transferReference,
+
             pathParams: {
               transferId:
-                row.providerTransferRef
-                  ? String(
-                      row.providerTransferRef,
-                    )
-                  : String(
-                      row.requestId,
-                    ),
+                transferReference,
             },
           };
         },
@@ -2791,42 +3366,10 @@ export function registerQrRewardServiceAdapters() {
               result.mapped,
             );
 
-          const rawStatus =
-            String(
-              mapped.status ??
-              "",
-            )
-              .trim()
-              .toLowerCase();
-
           const status =
-            [
-              "paid",
-              "success",
-              "successful",
-              "completed",
-            ].includes(
-              rawStatus,
-            )
-              ? "paid"
-              : [
-                  "failed",
-                  "failure",
-                  "rejected",
-                  "cancelled",
-                  "canceled",
-                ].includes(
-                  rawStatus,
-                )
-                ? "failed"
-                : [
-                    "reversed",
-                    "reverse",
-                  ].includes(
-                    rawStatus,
-                  )
-                  ? "reversed"
-                  : "processing";
+            payoutLifecycle(
+              mapped,
+            );
 
           const reference =
             String(
