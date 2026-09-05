@@ -101,11 +101,11 @@ try {
 
 
   if (
-    current !==
-    5
+    current <
+    6
   ) {
     throw new Error(
-      `Tenant "${schema}" must be on QR Rewards V5 before backend runtime provisioning. Current=${String(current)}`,
+      `Tenant "${schema}" must be on QR Rewards V6 before backend runtime provisioning. Current=${String(current)}`,
     );
   }
 
