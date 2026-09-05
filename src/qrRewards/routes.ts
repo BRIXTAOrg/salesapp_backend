@@ -1,22 +1,52 @@
 import type {
   Express,
   Request,
-  Response,
 } from "express";
+
+import {
+  eq,
+} from "drizzle-orm";
 
 import {
   withTenantSchema,
 } from "../db/db";
 
 import {
+  platformMeta,
+} from "../db/platformVNextSchema";
+
+import {
   verifyMobileToken,
 } from "../auth/jwt";
+
+import {
+  consumePublicRateLimit,
+} from "../public/rateLimit";
 
 import {
   claimQrReward,
   readQrRewardStatus,
   resolveQrReward,
 } from "./runtime";
+
+
+const QR_RUNTIME_KEY =
+  "public_qr_reward_responsibility_v1";
+
+
+function objectValue(
+  value: unknown,
+): Record<string, unknown> {
+  return (
+    value &&
+    typeof value ===
+      "object" &&
+    !Array.isArray(value)
+  )
+    ? value as
+        Record<string, unknown>
+    : {};
+}
 
 
 function validTenant(
@@ -28,98 +58,15 @@ function validTenant(
 }
 
 
-const RATE_WINDOW_MS =
-  60_000;
-
-const RATE_LIMIT =
-  120;
-
-
-const buckets =
-  new Map<
-    string,
-    {
-      startedAt:
-        number;
-
-      count:
-        number;
-    }
-  >();
-
-
-function rateLimit(
+function clientIdentity(
   req: Request,
-  res: Response,
 ) {
-  const forwarded =
-    String(
-      req.headers[
-        "x-forwarded-for"
-      ] ??
-      "",
-    )
-      .split(",")[0]
-      .trim();
-
-  const key =
-    forwarded ||
+  return (
     req.ip ||
-    "unknown";
-
-  const now =
-    Date.now();
-
-  const bucket =
-    buckets.get(
-      key,
-    );
-
-
-  if (
-    !bucket ||
-    now -
-      bucket.startedAt >
-      RATE_WINDOW_MS
-  ) {
-    buckets.set(
-      key,
-      {
-        startedAt:
-          now,
-
-        count:
-          1,
-      },
-    );
-
-    return true;
-  }
-
-
-  bucket.count +=
-    1;
-
-
-  if (
-    bucket.count >
-    RATE_LIMIT
-  ) {
-    res
-      .status(429)
-      .json({
-        success:
-          false,
-
-        error:
-          "Too many requests.",
-      });
-
-    return false;
-  }
-
-
-  return true;
+    req.socket
+      .remoteAddress ||
+    "unknown"
+  );
 }
 
 
@@ -127,23 +74,19 @@ function optionalAppUser(
   req: Request,
   tenant: string,
 ) {
-  const authorization =
+  const auth =
     String(
       req.headers
         .authorization ??
       "",
     ).trim();
 
-
-  if (
-    !authorization
-  ) {
+  if (!auth) {
     return null;
   }
 
-
   if (
-    !authorization.startsWith(
+    !auth.startsWith(
       "Bearer ",
     )
   ) {
@@ -152,19 +95,14 @@ function optionalAppUser(
     );
   }
 
-
-  const token =
-    authorization
-      .slice(
-        "Bearer ".length,
-      )
-      .trim();
-
   const payload =
     verifyMobileToken(
-      token,
+      auth
+        .slice(
+          "Bearer ".length,
+        )
+        .trim(),
     );
-
 
   if (
     payload.schemaName !==
@@ -175,8 +113,62 @@ function optionalAppUser(
     );
   }
 
-
   return payload.userId;
+}
+
+
+async function qrRuntimeMapping(
+  db:
+    Parameters<
+      Parameters<
+        typeof withTenantSchema
+      >[1]
+    >[0],
+) {
+  const rows =
+    await db
+      .select({
+        value:
+          platformMeta.value,
+      })
+      .from(
+        platformMeta,
+      )
+      .where(
+        eq(
+          platformMeta.key,
+          QR_RUNTIME_KEY,
+        ),
+      )
+      .limit(1);
+
+  const value =
+    objectValue(
+      rows[0]
+        ?.value,
+    );
+
+  return value
+    .responsibilityKey
+    ? {
+        responsibilityId:
+          value.responsibilityId ??
+          null,
+
+        responsibilityKey:
+          String(
+            value.responsibilityKey,
+          ),
+
+        publishedVersion:
+          value.publishedVersion ??
+          null,
+
+        manifestHash:
+          value.manifestHash ??
+          null,
+      }
+    : null;
 }
 
 
@@ -189,21 +181,10 @@ export default function setupQrRewardRoutes(
       req,
       res,
     ) => {
-      if (
-        !rateLimit(
-          req,
-          res,
-        )
-      ) {
-        return;
-      }
-
-
       const tenant =
         String(
           req.params.tenant,
         );
-
 
       if (
         !validTenant(
@@ -221,38 +202,96 @@ export default function setupQrRewardRoutes(
           });
       }
 
-
       try {
-        const reward =
+        const result =
           await withTenantSchema(
             tenant,
-            (db) =>
-              resolveQrReward(
-                db,
-                String(
-                  req.params.token,
-                ),
-                String(
-                  req.query
-                    .entityRecordId ??
-                  "",
-                ).trim() ||
-                null,
-              ),
+            async (
+              db,
+            ) => {
+              const rate =
+                await consumePublicRateLimit(
+                  db,
+                  {
+                    scope:
+                      "qr-resolve",
+
+                    identity:
+                      clientIdentity(
+                        req,
+                      ),
+
+                    limit:
+                      180,
+
+                    windowSeconds:
+                      60,
+                  },
+                );
+
+              if (
+                !rate.allowed
+              ) {
+                return {
+                  limited:
+                    true as const,
+                };
+              }
+
+              return {
+                limited:
+                  false as const,
+
+                reward:
+                  await resolveQrReward(
+                    db,
+                    String(
+                      req.params.token,
+                    ),
+                    String(
+                      req.query
+                        .entityRecordId ??
+                      "",
+                    ).trim() ||
+                    null,
+                  ),
+
+                runtime:
+                  await qrRuntimeMapping(
+                    db,
+                  ),
+              };
+            },
           );
 
+        if (
+          result.limited
+        ) {
+          return res
+            .status(429)
+            .json({
+              success:
+                false,
+
+              error:
+                "Too many requests.",
+            });
+        }
 
         res.setHeader(
           "Cache-Control",
           "no-store",
         );
 
-
         return res.json({
           success:
             true,
 
-          reward,
+          reward:
+            result.reward,
+
+          runtime:
+            result.runtime,
         });
       } catch (
         error
@@ -282,21 +321,10 @@ export default function setupQrRewardRoutes(
       req,
       res,
     ) => {
-      if (
-        !rateLimit(
-          req,
-          res,
-        )
-      ) {
-        return;
-      }
-
-
       const tenant =
         String(
           req.params.tenant,
         );
-
 
       if (
         !validTenant(
@@ -314,10 +342,8 @@ export default function setupQrRewardRoutes(
           });
       }
 
-
       let userId:
         number | null;
-
 
       try {
         userId =
@@ -337,59 +363,110 @@ export default function setupQrRewardRoutes(
           });
       }
 
-
       try {
-        const reward =
+        const result =
           await withTenantSchema(
             tenant,
-            (db) =>
-              claimQrReward(
-                db,
-                {
-                  rawToken:
-                    String(
-                      req.params.token,
-                    ),
+            async (
+              db,
+            ) => {
+              const rate =
+                await consumePublicRateLimit(
+                  db,
+                  {
+                    scope:
+                      "qr-claim",
 
-                  requestId:
-                    String(
-                      req.body
-                        ?.requestId ??
-                      "",
-                    ),
+                    identity:
+                      clientIdentity(
+                        req,
+                      ),
 
-                  upi:
-                    String(
-                      req.body
-                        ?.upi ??
-                      "",
-                    ),
+                    limit:
+                      60,
 
-                  entityRecordId:
-                    String(
-                      req.body
-                        ?.entityRecordId ??
-                      "",
-                    ).trim() ||
-                    null,
+                    windowSeconds:
+                      60,
+                  },
+                );
 
-                  userId,
-                },
-              ),
+              if (
+                !rate.allowed
+              ) {
+                return {
+                  limited:
+                    true as const,
+                };
+              }
+
+              return {
+                limited:
+                  false as const,
+
+                reward:
+                  await claimQrReward(
+                    db,
+                    {
+                      rawToken:
+                        String(
+                          req.params
+                            .token,
+                        ),
+
+                      requestId:
+                        String(
+                          req.body
+                            ?.requestId ??
+                          "",
+                        ),
+
+                      upi:
+                        String(
+                          req.body
+                            ?.upi ??
+                          "",
+                        ),
+
+                      entityRecordId:
+                        String(
+                          req.body
+                            ?.entityRecordId ??
+                          "",
+                        ).trim() ||
+                        null,
+
+                      userId,
+                    },
+                  ),
+              };
+            },
           );
 
+        if (
+          result.limited
+        ) {
+          return res
+            .status(429)
+            .json({
+              success:
+                false,
+
+              error:
+                "Too many requests.",
+            });
+        }
 
         res.setHeader(
           "Cache-Control",
           "no-store",
         );
 
-
         return res.json({
           success:
             true,
 
-          reward,
+          reward:
+            result.reward,
         });
       } catch (
         error
@@ -419,21 +496,10 @@ export default function setupQrRewardRoutes(
       req,
       res,
     ) => {
-      if (
-        !rateLimit(
-          req,
-          res,
-        )
-      ) {
-        return;
-      }
-
-
       const tenant =
         String(
           req.params.tenant,
         );
-
 
       if (
         !validTenant(
@@ -451,32 +517,82 @@ export default function setupQrRewardRoutes(
           });
       }
 
-
       try {
-        const reward =
+        const result =
           await withTenantSchema(
             tenant,
-            (db) =>
-              readQrRewardStatus(
-                db,
-                String(
-                  req.params.token,
-                ),
-              ),
+            async (
+              db,
+            ) => {
+              const rate =
+                await consumePublicRateLimit(
+                  db,
+                  {
+                    scope:
+                      "qr-status",
+
+                    identity:
+                      clientIdentity(
+                        req,
+                      ),
+
+                    limit:
+                      180,
+
+                    windowSeconds:
+                      60,
+                  },
+                );
+
+              if (
+                !rate.allowed
+              ) {
+                return {
+                  limited:
+                    true as const,
+                };
+              }
+
+              return {
+                limited:
+                  false as const,
+
+                reward:
+                  await readQrRewardStatus(
+                    db,
+                    String(
+                      req.params.token,
+                    ),
+                  ),
+              };
+            },
           );
 
+        if (
+          result.limited
+        ) {
+          return res
+            .status(429)
+            .json({
+              success:
+                false,
+
+              error:
+                "Too many requests.",
+            });
+        }
 
         res.setHeader(
           "Cache-Control",
           "no-store",
         );
 
-
         return res.json({
           success:
             true,
 
-          reward,
+          reward:
+            result.reward,
         });
       } catch (
         error

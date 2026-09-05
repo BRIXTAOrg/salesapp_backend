@@ -195,11 +195,15 @@ extends Error {
   readonly status?:
     number;
 
+  readonly ambiguous:
+    boolean;
+
   constructor(
     message: string,
     options: {
       retryable?: boolean;
       status?: number;
+      ambiguous?: boolean;
     } = {},
   ) {
     super(message);
@@ -213,6 +217,10 @@ extends Error {
 
     this.status =
       options.status;
+
+    this.ambiguous =
+      options.ambiguous ===
+      true;
   }
 }
 
@@ -1248,6 +1256,16 @@ export async function executePublishedService(
               429 ||
             response.status >=
               500,
+
+          /*
+           * Request may already have reached provider.
+           * Financial adapters must reconcile rather than blindly create again.
+           */
+          ambiguous:
+            response.status ===
+              408 ||
+            response.status >=
+              500,
         },
       );
     }
@@ -1323,6 +1341,12 @@ export async function executePublishedService(
           : "Provider execution failed.",
       {
         retryable:
+          true,
+
+        /*
+         * Network/timeout failure does not prove provider rejected request.
+         */
+        ambiguous:
           true,
       },
     );
@@ -1474,6 +1498,9 @@ export type ServiceAdapter = {
   preferInternal?:
     () =>
       boolean;
+
+  reconcileOnAmbiguous?:
+    boolean;
 
   applyResult?: (
     db: AppDatabase,
@@ -1766,6 +1793,45 @@ async function markFailure(
 }
 
 
+async function markUncertain(
+  schema: string,
+  row: QueueRow,
+  error: Error,
+) {
+  await withTenantSchema(
+    schema,
+    async (
+      db,
+    ) => {
+      await db.execute(sql`
+        UPDATE
+          integration_service_requests
+
+        SET
+          status =
+            'uncertain',
+
+          last_error =
+            ${error.message.slice(
+              0,
+              4000,
+            )},
+
+          completed_at =
+            now(),
+
+          updated_at =
+            now()
+
+        WHERE
+          id =
+            ${row.id}::uuid
+      `);
+    },
+  );
+}
+
+
 async function executeQueueRow(
   schema: string,
   row: QueueRow,
@@ -1974,15 +2040,58 @@ async function workerTick() {
               ? error.retryable
               : true;
 
-          const terminal =
-            !retryable ||
-            row.attempts >=
-              5;
+          const ambiguous =
+            error instanceof
+              ProviderExecutionError
+              ? error.ambiguous
+              : false;
 
           const adapter =
             SERVICE_ADAPTERS.get(
               row.capability,
             );
+
+          /*
+           * Financial create request with ambiguous delivery:
+           *
+           * DO NOT blindly re-create.
+           * Mark uncertain and let payout.getStatus reconcile it.
+           */
+          if (
+            ambiguous &&
+            adapter
+              ?.reconcileOnAmbiguous
+          ) {
+            if (
+              adapter
+                .applyError
+            ) {
+              await withTenantSchema(
+                schema,
+                (db) =>
+                  adapter
+                    .applyError!(
+                      db,
+                      row.requestPayload,
+                      normalized,
+                      false,
+                    ),
+              );
+            }
+
+            await markUncertain(
+              schema,
+              row,
+              normalized,
+            );
+
+            continue;
+          }
+
+          const terminal =
+            !retryable ||
+            row.attempts >=
+              5;
 
 
           if (

@@ -17,6 +17,7 @@ import type {
 import {
   dynamicSubmissions,
   workItems,
+  workspaceSettings,
 } from "../../db/applianceSchema";
 
 import {
@@ -530,6 +531,78 @@ async function buildWorld(
       case "session":
         world.context[contextDefinition.id] = payload.__session ?? null;
         break;
+
+      case "literal":
+        world.context[contextDefinition.id] =
+          contextDefinition.value;
+        break;
+
+      case "company_setting": {
+        const settingKey =
+          String(
+            contextDefinition.sourceKey ??
+            contextDefinition.config?.key ??
+            "",
+          ).trim();
+
+        if (!settingKey) {
+          world.context[contextDefinition.id] = null;
+          break;
+        }
+
+        const [setting] =
+          await db
+            .select({
+              value:
+                workspaceSettings.value,
+            })
+            .from(
+              workspaceSettings,
+            )
+            .where(
+              eq(
+                workspaceSettings.key,
+                settingKey,
+              ),
+            )
+            .limit(1);
+
+        world.context[contextDefinition.id] =
+          setting?.value ??
+          null;
+
+        break;
+      }
+
+      case "native": {
+        const nativeKey =
+          String(
+            contextDefinition.config
+              ?.nativeCapability ??
+            contextDefinition.sourceKey ??
+            "",
+          ).trim();
+
+        const metadata =
+          objectValue(
+            input.device
+              ?.metadata,
+          );
+
+        /*
+         * Device/native context is observational only.
+         * It must never become financial authority.
+         */
+        world.context[contextDefinition.id] =
+          nativeKey
+            ? metadata[nativeKey] ??
+              null
+            : input.device ??
+              {};
+
+        break;
+      }
+
       case "query":
         if (contextDefinition.sourceKey) {
           const result = await queryRuntimeDataSource(

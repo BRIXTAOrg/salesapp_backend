@@ -85,9 +85,19 @@ export type KernelContext = {
     | "session"
     | "query"
     | "object"
-    | "external";
+    | "external"
+    | "literal"
+    | "company_setting"
+    | "native";
   sourceKey?: string;
   path?: string;
+
+  /*
+   * CMS/backend semantic parity.
+   */
+  value?: unknown;
+  config?: Record<string, unknown>;
+
   mutable: boolean;
   frozenAfterState?: string;
 };
@@ -201,7 +211,19 @@ export type KernelDeviceContext = {
   metadata?: Record<string, unknown>;
 };
 
-export type KernelRuntimeWorld = {
+export type KernelEvaluationWorld = {
+  state: Record<string, string>;
+  captures: Record<string, unknown>;
+  context: Record<string, unknown>;
+  objects: Record<string, unknown>;
+  actors: Record<string, unknown>;
+  queries: Record<string, unknown>;
+  computed: Record<string, unknown>;
+  history: unknown[];
+};
+
+
+export type KernelRuntimeWorld = KernelEvaluationWorld & {
   actorUserId: number;
   subjectUserId: number;
   responsibilityId: number;
@@ -214,7 +236,6 @@ export type KernelRuntimeWorld = {
   actors: Record<string, unknown>;
   queries: Record<string, unknown>;
   computed: Record<string, unknown>;
-  history: unknown[];
   device: KernelDeviceContext;
   now: string;
 };

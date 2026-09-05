@@ -13,6 +13,11 @@ import type {
 } from "../db/db";
 
 import {
+  pool,
+  withTenantSchema,
+} from "../db/db";
+
+import {
   decryptSecretBox,
   encryptSecretBox,
   requiredSecret,
@@ -2081,6 +2086,13 @@ export function registerQrRewardServiceAdapters() {
             .BRIXTA_PAYOUT_PROVIDER !==
           "integration",
 
+      /*
+       * A transfer-create timeout/5xx is UNKNOWN, not automatically failed.
+       * Reconcile by deterministic status lookup instead of paying twice.
+       */
+      reconcileOnAmbiguous:
+        true,
+
       prepareInput:
         async (
           db,
@@ -2487,5 +2499,594 @@ export function registerQrRewardServiceAdapters() {
           `);
         },
     },
+  );
+
+
+  registerServiceAdapter(
+    "upi.validate",
+    {
+      preferInternal:
+        () =>
+          true,
+
+      executeInternal:
+        async (
+          _db,
+          raw,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const upi =
+            normalizeUpi(
+              String(
+                input.upi ??
+                "",
+              ),
+            );
+
+          const valid =
+            validUpi(
+              upi,
+            );
+
+          return {
+            ok:
+              true,
+
+            capability:
+              "upi.validate",
+
+            provider:
+              "brixta",
+
+            httpStatus:
+              200,
+
+            data: {
+              valid,
+
+              normalized:
+                valid
+                  ? upi
+                  : null,
+
+              /*
+               * Syntax validity is NOT proof of ownership.
+               */
+              ownershipVerified:
+                false,
+            },
+
+            mapped: {
+              valid,
+            },
+          };
+        },
+    },
+  );
+
+
+  registerServiceAdapter(
+    "payout.getStatus",
+    {
+      prepareInput:
+        async (
+          db,
+          raw,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const claimId =
+            String(
+              input.claimId ??
+              "",
+            ).trim();
+
+          const payoutId =
+            String(
+              input.payoutId ??
+              "",
+            ).trim();
+
+          if (
+            !claimId &&
+            !payoutId
+          ) {
+            throw new Error(
+              "payout.getStatus requires claimId or payoutId.",
+            );
+          }
+
+          const result =
+            claimId
+              ? await db.execute(sql`
+                  SELECT
+                    id
+                      AS "payoutId",
+
+                    claim_id
+                      AS "claimId",
+
+                    request_id
+                      AS "requestId",
+
+                    provider,
+
+                    provider_transfer_ref
+                      AS "providerTransferRef",
+
+                    status
+
+                  FROM
+                    qr_reward_payouts
+
+                  WHERE
+                    claim_id =
+                      ${claimId}::uuid
+
+                  LIMIT 1
+                `)
+              : await db.execute(sql`
+                  SELECT
+                    id
+                      AS "payoutId",
+
+                    claim_id
+                      AS "claimId",
+
+                    request_id
+                      AS "requestId",
+
+                    provider,
+
+                    provider_transfer_ref
+                      AS "providerTransferRef",
+
+                    status
+
+                  FROM
+                    qr_reward_payouts
+
+                  WHERE
+                    id =
+                      ${payoutId}::uuid
+
+                  LIMIT 1
+                `);
+
+          const row =
+            result.rows[0] as
+              | Record<string, unknown>
+              | undefined;
+
+          if (!row) {
+            throw new Error(
+              "Payout intent not found.",
+            );
+          }
+
+          return {
+            payoutId:
+              String(
+                row.payoutId,
+              ),
+
+            claimId:
+              String(
+                row.claimId,
+              ),
+
+            requestId:
+              String(
+                row.requestId,
+              ),
+
+            provider:
+              String(
+                row.provider,
+              ),
+
+            providerTransferRef:
+              row.providerTransferRef
+                ? String(
+                    row.providerTransferRef,
+                  )
+                : null,
+
+            currentStatus:
+              String(
+                row.status,
+              ),
+
+            pathParams: {
+              transferId:
+                row.providerTransferRef
+                  ? String(
+                      row.providerTransferRef,
+                    )
+                  : String(
+                      row.requestId,
+                    ),
+            },
+          };
+        },
+
+      preferInternal:
+        () =>
+          process.env
+            .BRIXTA_PAYOUT_PROVIDER !==
+          "integration",
+
+      executeInternal:
+        async (
+          _db,
+          raw,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const status =
+            String(
+              input.currentStatus ??
+              "processing",
+            );
+
+          return {
+            ok:
+              true,
+
+            capability:
+              "payout.getStatus",
+
+            provider:
+              String(
+                input.provider ??
+                "brixta_sandbox",
+              ),
+
+            httpStatus:
+              200,
+
+            data: {
+              status,
+
+              providerTransferRef:
+                input
+                  .providerTransferRef ??
+                null,
+            },
+
+            mapped: {
+              status,
+
+              providerTransferRef:
+                input
+                  .providerTransferRef ??
+                null,
+            },
+          };
+        },
+
+      applyResult:
+        async (
+          db,
+          raw,
+          result,
+        ) => {
+          const input =
+            objectValue(
+              raw,
+            );
+
+          const mapped =
+            objectValue(
+              result.mapped,
+            );
+
+          const rawStatus =
+            String(
+              mapped.status ??
+              "",
+            )
+              .trim()
+              .toLowerCase();
+
+          const status =
+            [
+              "paid",
+              "success",
+              "successful",
+              "completed",
+            ].includes(
+              rawStatus,
+            )
+              ? "paid"
+              : [
+                  "failed",
+                  "failure",
+                  "rejected",
+                  "cancelled",
+                  "canceled",
+                ].includes(
+                  rawStatus,
+                )
+                ? "failed"
+                : [
+                    "reversed",
+                    "reverse",
+                  ].includes(
+                    rawStatus,
+                  )
+                  ? "reversed"
+                  : "processing";
+
+          const reference =
+            String(
+              mapped
+                .providerTransferRef ??
+              mapped.transferId ??
+              mapped.reference ??
+              input
+                .providerTransferRef ??
+              "",
+            ).trim() ||
+            null;
+
+          await db.execute(sql`
+            UPDATE
+              qr_reward_payouts
+
+            SET
+              status =
+                ${status},
+
+              provider =
+                ${result.provider},
+
+              provider_transfer_ref =
+                COALESCE(
+                  ${reference},
+                  provider_transfer_ref
+                ),
+
+              provider_response =
+                ${JSON.stringify(
+                  result,
+                )}::jsonb,
+
+              paid_at =
+                CASE
+                  WHEN ${status} = 'paid'
+                  THEN COALESCE(
+                    paid_at,
+                    now()
+                  )
+                  ELSE paid_at
+                END,
+
+              reversed_at =
+                CASE
+                  WHEN ${status} = 'reversed'
+                  THEN COALESCE(
+                    reversed_at,
+                    now()
+                  )
+                  ELSE reversed_at
+                END,
+
+              last_error =
+                NULL,
+
+              updated_at =
+                now()
+
+            WHERE
+              id =
+                ${String(
+                  input.payoutId ??
+                  "",
+                )}::uuid
+          `);
+        },
+    },
+  );
+}
+
+
+
+let payoutReconcilerStarted =
+  false;
+
+let payoutReconcilerBusy =
+  false;
+
+
+async function payoutSchemas() {
+  const result =
+    await pool.query<{
+      schema: string;
+    }>(`
+      SELECT DISTINCT
+        table_schema
+          AS schema
+
+      FROM
+        information_schema.tables
+
+      WHERE
+        table_name =
+          'qr_reward_payouts'
+
+        AND
+        table_schema NOT IN (
+          'pg_catalog',
+          'information_schema'
+        )
+
+      ORDER BY
+        table_schema
+    `);
+
+  return result.rows
+    .map(
+      (row) =>
+        row.schema,
+    )
+    .filter(
+      (schema) =>
+        /^[a-z][a-z0-9_]{0,62}$/.test(
+          schema,
+        ),
+    );
+}
+
+
+async function payoutReconcileTick() {
+  if (
+    payoutReconcilerBusy
+  ) {
+    return;
+  }
+
+  payoutReconcilerBusy =
+    true;
+
+  try {
+    const schemas =
+      await payoutSchemas();
+
+    for (
+      const schema of
+      schemas
+    ) {
+      await withTenantSchema(
+        schema,
+        async (
+          db,
+        ) => {
+          const result =
+            await db.execute(sql`
+              SELECT
+                id,
+                claim_id
+                  AS "claimId"
+
+              FROM
+                qr_reward_payouts
+
+              WHERE
+                status IN (
+                  'processing',
+                  'uncertain'
+                )
+
+                AND
+                updated_at <=
+                  now() -
+                  interval '15 seconds'
+
+              ORDER BY
+                updated_at
+
+              LIMIT 50
+            `);
+
+          const minute =
+            Math.floor(
+              Date.now() /
+              60_000,
+            );
+
+          for (
+            const raw of
+            result.rows
+          ) {
+            const row =
+              raw as
+                Record<string, unknown>;
+
+            await enqueueServiceRequest(
+              db,
+              {
+                capability:
+                  "payout.getStatus",
+
+                request: {
+                  payoutId:
+                    String(
+                      row.id,
+                    ),
+
+                  claimId:
+                    String(
+                      row.claimId,
+                    ),
+                },
+
+                idempotencyKey:
+                  `payout-status:${String(row.id)}:${minute}`,
+
+                source: {
+                  type:
+                    "payout_reconciliation",
+
+                  payoutId:
+                    String(
+                      row.id,
+                    ),
+                },
+              },
+            );
+          }
+        },
+      );
+    }
+  } catch (
+    error
+  ) {
+    console.error(
+      "Payout reconciliation failed:",
+      error,
+    );
+  } finally {
+    payoutReconcilerBusy =
+      false;
+  }
+}
+
+
+export function startQrPayoutReconciler() {
+  if (
+    payoutReconcilerStarted ||
+    process.env
+      .BRIXTA_BACKEND_EDITION !==
+      "qr-voucher-rewards"
+  ) {
+    return;
+  }
+
+  payoutReconcilerStarted =
+    true;
+
+  const interval =
+    setInterval(
+      () => {
+        void payoutReconcileTick();
+      },
+      15_000,
+    );
+
+  interval.unref();
+
+  console.log(
+    " QR payout reconciler: ENABLED",
   );
 }
