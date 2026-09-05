@@ -20,6 +20,7 @@ import {
 import type {
   KernelActor,
   KernelConditionGroup,
+  KernelEvaluationWorld,
   KernelRuntimeWorld,
   KernelValueRef,
   ResponsibilityKernel,
@@ -70,7 +71,7 @@ function numeric(
 }
 
 export function resolveValueRef(
-  world: KernelRuntimeWorld,
+  world: KernelEvaluationWorld,
   ref?: KernelValueRef,
 ): unknown {
   if (!ref) return undefined;
@@ -173,7 +174,7 @@ function conditionResult(
 }
 
 export function evaluateConditionGroup(
-  world: KernelRuntimeWorld,
+  world: KernelEvaluationWorld,
   group?: KernelConditionGroup,
 ) {
   if (!group || !group.conditions.length) {

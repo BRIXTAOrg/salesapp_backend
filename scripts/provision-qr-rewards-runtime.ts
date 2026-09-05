@@ -367,6 +367,217 @@ try {
   `);
 
 
+  await client.query(`
+    ALTER TABLE
+      qr_reward_payouts
+
+    ADD COLUMN IF NOT EXISTS
+      reversed_at
+        timestamptz
+  `);
+
+
+  /*
+   * Public External Runtime deliberately uses its own record store.
+   *
+   * It does NOT create fake users and does NOT weaken
+   * dynamic_submissions.user_id.
+   */
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS
+      external_runtime_records (
+        id
+          uuid
+          PRIMARY KEY,
+
+        responsibility_id
+          integer
+          NOT NULL,
+
+        responsibility_key
+          varchar(180)
+          NOT NULL,
+
+        external_session_id
+          varchar(80)
+          NOT NULL,
+
+        status
+          varchar(40)
+          NOT NULL
+          DEFAULT
+            'draft',
+
+        payload
+          jsonb
+          NOT NULL
+          DEFAULT
+            '{}'::jsonb,
+
+        manifest_version
+          integer,
+
+        manifest_hash
+          varchar(128),
+
+        created_at
+          timestamptz
+          NOT NULL
+          DEFAULT
+            now(),
+
+        updated_at
+          timestamptz
+          NOT NULL
+          DEFAULT
+            now()
+      )
+  `);
+
+
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS
+      idx_external_runtime_records_session
+
+    ON
+      external_runtime_records(
+        responsibility_id,
+        external_session_id,
+        updated_at
+      )
+  `);
+
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS
+      external_runtime_action_receipts (
+        id
+          uuid
+          PRIMARY KEY,
+
+        responsibility_id
+          integer
+          NOT NULL,
+
+        external_session_id
+          varchar(80)
+          NOT NULL,
+
+        client_mutation_id
+          varchar(160)
+          NOT NULL,
+
+        response_payload
+          jsonb
+          NOT NULL
+          DEFAULT
+            '{}'::jsonb,
+
+        created_at
+          timestamptz
+          NOT NULL
+          DEFAULT
+            now(),
+
+        updated_at
+          timestamptz
+          NOT NULL
+          DEFAULT
+            now(),
+
+        UNIQUE (
+          responsibility_id,
+          external_session_id,
+          client_mutation_id
+        )
+      )
+  `);
+
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS
+      public_runtime_rate_limits (
+        bucket_key
+          varchar(64)
+          NOT NULL,
+
+        window_started_at
+          timestamptz
+          NOT NULL,
+
+        count
+          integer
+          NOT NULL
+          DEFAULT
+            0,
+
+        updated_at
+          timestamptz
+          NOT NULL
+          DEFAULT
+            now(),
+
+        PRIMARY KEY (
+          bucket_key,
+          window_started_at
+        )
+      )
+  `);
+
+
+  await client.query(`
+    CREATE TABLE IF NOT EXISTS
+      integration_webhook_events (
+        id
+          uuid
+          PRIMARY KEY,
+
+        integration_key
+          varchar(160)
+          NOT NULL,
+
+        event_id
+          varchar(255)
+          NOT NULL,
+
+        provider_reference
+          varchar(255),
+
+        status
+          varchar(40),
+
+        payload
+          jsonb
+          NOT NULL
+          DEFAULT
+            '{}'::jsonb,
+
+        received_at
+          timestamptz
+          NOT NULL
+          DEFAULT
+            now(),
+
+        UNIQUE (
+          integration_key,
+          event_id
+        )
+      )
+  `);
+
+
+  await client.query(`
+    CREATE INDEX IF NOT EXISTS
+      idx_integration_webhook_reference
+
+    ON
+      integration_webhook_events(
+        provider_reference,
+        received_at
+      )
+  `);
+
+
   await client.query(
     `
       INSERT INTO
@@ -396,7 +607,7 @@ try {
     [
       JSON.stringify({
         version:
-          1,
+          2,
 
         publicClaims:
           true,
@@ -405,6 +616,21 @@ try {
           true,
 
         integrationQueue:
+          true,
+
+        externalPrincipal:
+          true,
+
+        externalActionRuntime:
+          true,
+
+        dbRateLimit:
+          true,
+
+        webhookRuntime:
+          true,
+
+        payoutReconciliation:
           true,
       }),
     ],

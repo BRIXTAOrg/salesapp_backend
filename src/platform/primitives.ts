@@ -128,6 +128,11 @@ export const PLATFORM_PRIMITIVES = {
     publicExternalRuntime: true,
     integrationServiceQueue: true,
     serverServiceExecution: true,
+    externalActionRuntime: true,
+    signedExternalPrincipal: true,
+    webhookRuntime: true,
+    payoutReconciliation: true,
+    databaseRateLimit: true,
   },
 } as const;
 

@@ -25,6 +25,12 @@ import {
   startIntegrationServiceWorker,
 } from "./src/platform/integrations/serviceRuntime";
 
+import setupIntegrationWebhookRoutes from "./src/platform/integrations/webhookRoutes";
+
+import {
+  startQrPayoutReconciler,
+} from "./src/qrRewards/runtime";
+
 import {
   PLATFORM_PRIMITIVES,
 } from "./src/platform/primitives";
@@ -61,7 +67,110 @@ const PORT =
     ? DEFAULT_PORT
     : parsedPort;
 
-app.use(cors());
+if (
+  process.env
+    .BRIXTA_TRUST_PROXY ===
+  "1"
+) {
+  app.set(
+    "trust proxy",
+    1,
+  );
+}
+
+
+const configuredCorsOrigins =
+  new Set(
+    String(
+      process.env
+        .BRIXTA_CORS_ORIGINS ??
+      "",
+    )
+      .split(",")
+      .map(
+        (value) =>
+          value
+            .trim()
+            .replace(
+              /\/$/,
+              "",
+            ),
+      )
+      .filter(Boolean),
+  );
+
+
+app.use(
+  cors({
+    origin(
+      origin,
+      callback,
+    ) {
+      /*
+       * Native apps/curl/server-to-server commonly have no Origin.
+       */
+      if (!origin) {
+        callback(
+          null,
+          true,
+        );
+        return;
+      }
+
+      const normalized =
+        origin.replace(
+          /\/$/,
+          "",
+        );
+
+      const developmentLocal =
+        process.env.NODE_ENV !==
+          "production" &&
+        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(
+          normalized,
+        );
+
+      const brixtaOrigin =
+        /^https:\/\/([a-z0-9-]+\.)*brixta\.com$/i.test(
+          normalized,
+        );
+
+      callback(
+        null,
+        developmentLocal ||
+        brixtaOrigin ||
+        configuredCorsOrigins.has(
+          normalized,
+        ),
+      );
+    },
+
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
+
+    allowedHeaders: [
+      "content-type",
+      "authorization",
+      "x-brixta-external-session",
+      "x-brixta-client-mutation-id",
+    ],
+  }),
+);
+
+
+/*
+ * Webhook raw body MUST be consumed before express.json().
+ */
+setupIntegrationWebhookRoutes(
+  app,
+);
+
 
 app.use(
   express.json({
@@ -196,6 +305,8 @@ if (
   setupQrRewardRoutes(
     app,
   );
+
+  startQrPayoutReconciler();
 }
 
 

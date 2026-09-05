@@ -1,5 +1,6 @@
 import type {
   Express,
+  Request,
 } from "express";
 
 import {
@@ -7,38 +8,89 @@ import {
 } from "../db/db";
 
 import {
-  getResponsibilityByKey,
-} from "../platform/responsibility";
+  verifyMobileToken,
+} from "../auth/jwt";
 
 import {
-  getPublishedRuntimeManifest,
-} from "../platform/vnext/runtimeManifest";
+  consumePublicRateLimit,
+} from "./rateLimit";
 
 import {
-  listPublishedCapabilities,
-} from "../platform/integrations/serviceRuntime";
+  createExternalSession,
+  verifyExternalSession,
+} from "./externalSession";
 
-
-function objectValue(
-  value: unknown,
-): Record<string, unknown> {
-  return (
-    value &&
-    typeof value ===
-      "object" &&
-    !Array.isArray(value)
-  )
-    ? value as
-        Record<string, unknown>
-    : {};
-}
+import {
+  executeExternalRuntimeAction,
+  loadExternalRuntimeDefinition,
+  publicRuntimeContract,
+} from "./externalActionRuntime";
 
 
 function validTenant(
-  tenant: string,
+  value: string,
 ) {
   return /^[a-z][a-z0-9_]{0,62}$/.test(
-    tenant,
+    value,
+  );
+}
+
+
+function optionalAppUser(
+  req: Request,
+  tenant: string,
+) {
+  const auth =
+    String(
+      req.headers
+        .authorization ??
+      "",
+    ).trim();
+
+  if (!auth) {
+    return null;
+  }
+
+  if (
+    !auth.startsWith(
+      "Bearer ",
+    )
+  ) {
+    throw new Error(
+      "INVALID_AUTH",
+    );
+  }
+
+  const session =
+    verifyMobileToken(
+      auth
+        .slice(
+          "Bearer ".length,
+        )
+        .trim(),
+    );
+
+  if (
+    session.schemaName !==
+    tenant
+  ) {
+    throw new Error(
+      "TENANT_MISMATCH",
+    );
+  }
+
+  return session.userId;
+}
+
+
+function clientIdentity(
+  req: Request,
+) {
+  return (
+    req.ip ||
+    req.socket
+      .remoteAddress ||
+    "unknown"
   );
 }
 
@@ -57,6 +109,11 @@ export default function setupPublicExternalRuntimeRoutes(
           req.params.tenant,
         );
 
+      const responsibilityKey =
+        String(
+          req.params
+            .responsibilityKey,
+        );
 
       if (
         !validTenant(
@@ -74,26 +131,81 @@ export default function setupPublicExternalRuntimeRoutes(
           });
       }
 
-
       try {
+        let userId:
+          number | null =
+          null;
+
+        try {
+          userId =
+            optionalAppUser(
+              req,
+              tenant,
+            );
+        } catch {
+          return res
+            .status(401)
+            .json({
+              success:
+                false,
+
+              error:
+                "Invalid BRIXTA session.",
+            });
+        }
+
         const result =
           await withTenantSchema(
             tenant,
             async (
               db,
             ) => {
-              const responsibility =
-                await getResponsibilityByKey(
+              const rate =
+                await consumePublicRateLimit(
                   db,
-                  String(
-                    req.params
-                      .responsibilityKey,
-                  ),
+                  {
+                    scope:
+                      `external-manifest:${responsibilityKey}`,
+
+                    identity:
+                      clientIdentity(
+                        req,
+                      ),
+
+                    limit:
+                      180,
+
+                    windowSeconds:
+                      60,
+                  },
                 );
 
+              if (
+                !rate.allowed
+              ) {
+                return {
+                  status:
+                    429,
+
+                  body: {
+                    success:
+                      false,
+
+                    error:
+                      "Too many requests.",
+                  },
+                };
+              }
+
+              const definition =
+                await loadExternalRuntimeDefinition(
+                  db,
+                  tenant,
+                  responsibilityKey,
+                );
 
               if (
-                !responsibility
+                !definition
               ) {
                 return {
                   status:
@@ -104,156 +216,83 @@ export default function setupPublicExternalRuntimeRoutes(
                       false,
 
                     error:
-                      "Responsibility not found.",
+                      "Public runtime not found.",
                   },
                 };
               }
-
-
-              const published =
-                await getPublishedRuntimeManifest(
-                  db,
-                  responsibility.id,
-                );
-
-
-              if (
-                !published ||
-                !published.kernel
-              ) {
-                return {
-                  status:
-                    404,
-
-                  body: {
-                    success:
-                      false,
-
-                    error:
-                      "Published runtime not found.",
-                  },
-                };
-              }
-
-
-              const kernelMetadata =
-                objectValue(
-                  published.kernel
-                    .metadata,
-                );
-
-              const deliveryTargets =
-                objectValue(
-                  kernelMetadata
-                    .deliveryTargets,
-                );
-
-              const external =
-                objectValue(
-                  deliveryTargets
-                    .externalWeb,
-                );
 
               const access =
                 String(
-                  external.access ??
+                  definition
+                    .delivery
+                    .access ??
                   "",
                 );
 
-
               if (
-                external.enabled !==
-                  true ||
-                ![
-                  "public",
-                  "optional_auth",
-                ].includes(
-                  access,
-                ) ||
-                String(
-                  external.tenantKey ??
-                  "",
-                ) !==
-                  tenant
+                access ===
+                  "required_auth" &&
+                !userId
               ) {
                 return {
                   status:
-                    404,
+                    401,
 
                   body: {
                     success:
                       false,
 
                     error:
-                      "External runtime is not public.",
+                      "BRIXTA authentication is required.",
                   },
                 };
               }
 
-
-              const ui =
-                objectValue(
-                  kernelMetadata.ui,
+              const existing =
+                verifyExternalSession(
+                  String(
+                    req.headers[
+                      "x-brixta-external-session"
+                    ] ??
+                    "",
+                  ),
                 );
 
-
-              const manifest =
-                objectValue(
-                  published.manifest,
-                );
-
-              const extension =
-                objectValue(
-                  manifest.extension,
-                );
-
-              const extensionMetadata =
-                objectValue(
-                  extension.metadata,
-                );
-
-
-              const requestedCapabilities =
-                Array.isArray(
-                  external
-                    .allowedCapabilities,
+              const external =
+                (
+                  existing &&
+                  existing.tenant ===
+                    tenant &&
+                  existing
+                    .responsibilityKey ===
+                    responsibilityKey &&
+                  Number(
+                    existing.userId ??
+                    0,
+                  ) ===
+                    Number(
+                      userId ??
+                      0,
+                    )
                 )
-                  ? external
-                      .allowedCapabilities
-                      .map(String)
-                  : [];
+                  ? {
+                      token:
+                        String(
+                          req.headers[
+                            "x-brixta-external-session"
+                          ],
+                        ),
 
+                      payload:
+                        existing,
+                    }
+                  : createExternalSession({
+                      tenant,
 
-              const publishedApiCapabilities =
-                await listPublishedCapabilities(
-                  db,
-                );
+                      responsibilityKey,
 
-
-              const builtInPublic =
-                new Set([
-                  "qrReward.resolve",
-                  "qrReward.preflight",
-                  "entity.listEligible",
-                  "upi.validate",
-                  "voucher.claimPublic",
-                  "payout.request",
-                  "payout.getStatus",
-                ]);
-
-
-              const allowedCapabilities =
-                requestedCapabilities
-                  .filter(
-                    (capability) =>
-                      builtInPublic.has(
-                        capability,
-                      ) ||
-                      publishedApiCapabilities.includes(
-                        capability,
-                      ),
-                  );
-
+                      userId,
+                    });
 
               return {
                 status:
@@ -263,67 +302,44 @@ export default function setupPublicExternalRuntimeRoutes(
                   success:
                     true,
 
-                  responsibility: {
+                  runtime:
+                    publicRuntimeContract(
+                      definition,
+                    ),
+
+                  session: {
+                    token:
+                      external.token,
+
                     id:
-                      responsibility.id,
+                      external
+                        .payload
+                        .sessionId,
 
-                    key:
-                      responsibility.key,
+                    expiresAt:
+                      new Date(
+                        external
+                          .payload
+                          .exp *
+                        1000,
+                      )
+                        .toISOString(),
 
-                    title:
-                      responsibility.title,
+                    authenticatedUserId:
+                      external
+                        .payload
+                        .userId ??
+                      null,
                   },
-
-                  manifest: {
-                    version:
-                      published.version,
-
-                    hash:
-                      published.manifestHash,
-
-                    source:
-                      published.source,
-                  },
-
-                  delivery: {
-                    runtime:
-                      external.runtime,
-
-                    access,
-
-                    routePattern:
-                      external.routePattern,
-
-                    tenantKey:
-                      tenant,
-
-                    allowedCapabilities,
-                  },
-
-                  uiDocument:
-                    ui.uiDocument ??
-                    null,
-
-                  /*
-                   * Safe to expose graph contract.
-                   *
-                   * Provider credentials are not stored in Pixel.
-                   */
-                  pixelLogic:
-                    extensionMetadata
-                      .pixelLogic ??
-                    null,
                 },
               };
             },
           );
 
-
         res.setHeader(
           "Cache-Control",
           "no-store",
         );
-
 
         return res
           .status(
@@ -336,7 +352,7 @@ export default function setupPublicExternalRuntimeRoutes(
         error
       ) {
         console.error(
-          "Public external runtime failed:",
+          "External runtime failed:",
           error,
         );
 
@@ -347,7 +363,299 @@ export default function setupPublicExternalRuntimeRoutes(
               false,
 
             error:
-              "Unable to load public runtime.",
+              "Unable to load external runtime.",
+          });
+      }
+    },
+  );
+
+
+  app.post(
+    "/api/public/runtime/:tenant/:responsibilityKey/actions/:actionId",
+    async (
+      req,
+      res,
+    ) => {
+      const tenant =
+        String(
+          req.params.tenant,
+        );
+
+      const responsibilityKey =
+        String(
+          req.params
+            .responsibilityKey,
+        );
+
+      if (
+        !validTenant(
+          tenant,
+        )
+      ) {
+        return res
+          .status(404)
+          .json({
+            success:
+              false,
+
+            error:
+              "Not found.",
+          });
+      }
+
+      const external =
+        verifyExternalSession(
+          String(
+            req.headers[
+              "x-brixta-external-session"
+            ] ??
+            "",
+          ),
+        );
+
+      if (
+        !external ||
+        external.tenant !==
+          tenant ||
+        external
+          .responsibilityKey !==
+          responsibilityKey
+      ) {
+        return res
+          .status(401)
+          .json({
+            success:
+              false,
+
+            error:
+              "External runtime session is missing or invalid.",
+          });
+      }
+
+      const clientMutationId =
+        String(
+          req.body
+            ?.clientMutationId ??
+          "",
+        ).trim();
+
+      if (
+        clientMutationId.length <
+          8 ||
+        clientMutationId.length >
+          160
+      ) {
+        return res
+          .status(400)
+          .json({
+            success:
+              false,
+
+            error:
+              "clientMutationId must be 8–160 characters.",
+          });
+      }
+
+      try {
+        const result =
+          await withTenantSchema(
+            tenant,
+            async (
+              db,
+            ) => {
+              const rate =
+                await consumePublicRateLimit(
+                  db,
+                  {
+                    scope:
+                      `external-action:${responsibilityKey}`,
+
+                    identity:
+                      `${clientIdentity(req)}:${external.sessionId}`,
+
+                    limit:
+                      90,
+
+                    windowSeconds:
+                      60,
+                  },
+                );
+
+              if (
+                !rate.allowed
+              ) {
+                return {
+                  ok:
+                    false as const,
+
+                  status:
+                    429,
+
+                  code:
+                    "RATE_LIMITED",
+
+                  error:
+                    "Too many requests.",
+                };
+              }
+
+              const definition =
+                await loadExternalRuntimeDefinition(
+                  db,
+                  tenant,
+                  responsibilityKey,
+                );
+
+              if (
+                !definition
+              ) {
+                return {
+                  ok:
+                    false as const,
+
+                  status:
+                    404,
+
+                  code:
+                    "EXTERNAL_RUNTIME_NOT_FOUND",
+
+                  error:
+                    "Public runtime not found.",
+                };
+              }
+
+              if (
+                String(
+                  definition
+                    .delivery
+                    .access ??
+                  "",
+                ) ===
+                  "required_auth" &&
+                !external.userId
+              ) {
+                return {
+                  ok:
+                    false as const,
+
+                  status:
+                    401,
+
+                  code:
+                    "EXTERNAL_AUTH_REQUIRED",
+
+                  error:
+                    "BRIXTA authentication is required.",
+                };
+              }
+
+              return executeExternalRuntimeAction(
+                db,
+                {
+                  definition,
+
+                  sessionId:
+                    external.sessionId,
+
+                  actionId:
+                    String(
+                      req.params
+                        .actionId,
+                    ),
+
+                  recordId:
+                    String(
+                      req.body
+                        ?.recordId ??
+                      "",
+                    ).trim() ||
+                    null,
+
+                  payload:
+                    req.body
+                      ?.payload ??
+                    {},
+
+                  clientMutationId,
+
+                  device:
+                    (
+                      req.body
+                        ?.device &&
+                      typeof req.body
+                        .device ===
+                        "object"
+                    )
+                      ? req.body
+                          .device as
+                          Record<
+                            string,
+                            unknown
+                          >
+                      : {},
+                },
+              );
+            },
+          );
+
+        res.setHeader(
+          "Cache-Control",
+          "no-store",
+        );
+
+        if (
+          !result.ok
+        ) {
+          return res
+            .status(
+              result.status,
+            )
+            .json({
+              success:
+                false,
+
+              code:
+                result.code,
+
+              error:
+                result.error,
+
+              details:
+                "details" in
+                  result
+                  ? result.details
+                  : undefined,
+            });
+        }
+
+        return res.json({
+          success:
+            true,
+
+          ...result.value,
+
+          idempotent:
+            result.idempotent,
+        });
+      } catch (
+        error
+      ) {
+        console.error(
+          "External action failed:",
+          error,
+        );
+
+        return res
+          .status(500)
+          .json({
+            success:
+              false,
+
+            error:
+              error instanceof
+              Error
+                ? error.message
+                : "External action failed.",
           });
       }
     },
