@@ -64,6 +64,10 @@ import {
 } from "../vnext/dataSourceRuntime";
 
 import {
+  enqueueServiceRequest,
+} from "../integrations/serviceRuntime";
+
+import {
   actorCanAct,
   evaluateConditionGroup,
   readPath,
@@ -1489,6 +1493,153 @@ async function applyEffect(
       result.backgroundPush = false;
       break;
     }
+
+    /*
+     * BRIXTA_SERVICE_EXECUTION_EFFECT_V1
+     *
+     * Pixel decides WHEN a service should run.
+     *
+     * Integration Runtime decides HOW the provider is called.
+     *
+     * Provider HTTP is deliberately asynchronous relative to
+     * this business transaction.
+     */
+    case "service_execute": {
+      const capability =
+        String(
+          effect.config.capability ??
+          effect.targetKey ??
+          "",
+        ).trim();
+
+      if (
+        !capability
+      ) {
+        result.error =
+          "service_execute requires a capability.";
+
+        break;
+      }
+
+      const resolved =
+        resolveValueRef(
+          input.world,
+          effect.value,
+        );
+
+      const rawRequest =
+        resolved ??
+        effect.config.input ??
+        {};
+
+      const request =
+        rawRequest &&
+        typeof rawRequest ===
+          "object" &&
+        !Array.isArray(
+          rawRequest,
+        )
+          ? rawRequest as
+              Record<string, unknown>
+          : {
+              value:
+                rawRequest,
+            };
+
+      const authoredIdempotency =
+        String(
+          request.idempotencyKey ??
+          effect.config.idempotencyKey ??
+          "",
+        ).trim();
+
+      const idempotencyKey =
+        (
+          authoredIdempotency ||
+          [
+            "pixel",
+            input.responsibilityId,
+            input.recordId ??
+              "new",
+            effect.id,
+          ].join(":")
+        ).slice(
+          0,
+          220,
+        );
+
+      const queued =
+        await enqueueServiceRequest(
+          db,
+          {
+            capability,
+
+            request,
+
+            idempotencyKey,
+
+            source: {
+              type:
+                "pixel_logic",
+
+              responsibilityId:
+                input.responsibilityId,
+
+              responsibilityKey:
+                input.responsibilityKey,
+
+              recordId:
+                input.recordId,
+
+              pixelEffectId:
+                effect.id,
+            },
+          },
+        );
+
+      result.capability =
+        capability;
+
+      result.serviceRequest =
+        queued;
+
+      const resultKey =
+        String(
+          effect.config.resultKey ??
+          "",
+        ).trim();
+
+      if (
+        resultKey
+      ) {
+        const computed =
+          objectValue(
+            input.payload
+              .__computed,
+          );
+
+        computed[
+          resultKey
+        ] =
+          queued;
+
+        input.payload
+          .__computed =
+          computed;
+
+        input.world
+          .computed[
+          resultKey
+        ] =
+          queued;
+
+        result.computedKey =
+          resultKey;
+      }
+
+      break;
+    }
+
 
     case "trigger_action":
       // Triggering arbitrary actions recursively can create cycles. The

@@ -14,6 +14,17 @@ import setupMobilePlatformRoutes from "./src/mobile/platform";
 import setupApplianceAdminRoutes from "./src/admin/appliance";
 import setupUploadRoutes from "./src/photoUpload/upload";
 
+import setupPublicExternalRuntimeRoutes from "./src/public/externalRuntimeRoutes";
+import setupQrRewardRoutes from "./src/qrRewards/routes";
+
+import {
+  registerQrRewardServiceAdapters,
+} from "./src/qrRewards/runtime";
+
+import {
+  startIntegrationServiceWorker,
+} from "./src/platform/integrations/serviceRuntime";
+
 import {
   PLATFORM_PRIMITIVES,
 } from "./src/platform/primitives";
@@ -24,6 +35,11 @@ dotenv.config({
     ".env",
   ),
 });
+
+
+const QR_REWARDS_EDITION =
+  process.env.BRIXTA_BACKEND_EDITION ===
+  "qr-voucher-rewards";
 
 const app: Express =
   express();
@@ -114,6 +130,9 @@ app.get(
         deviceRuntime: true,
         workflowRuntime: true,
         legacyCrudCompatibility: true,
+        publicExternalRuntime: true,
+        apiServiceRuntime: true,
+        qrRewardsPublic: QR_REWARDS_EDITION,
       },
       endpoints: {
         auth:
@@ -140,6 +159,10 @@ app.get(
           "/api/salesApp/workflow/state",
         media:
           "/api/salesApp/media",
+        publicRuntime:
+          "/api/public/runtime/:tenant/:responsibilityKey",
+        publicQrReward:
+          "/api/public/qr-rewards/:tenant/:token",
         admin:
           "/api/admin/appliance",
       },
@@ -153,6 +176,36 @@ setupMobileBootstrapRoutes(
 setupMobilePlatformRoutes(
   app,
 );
+
+/*
+ * Generic public External Link Runtime.
+ *
+ * Route exists globally, but a Responsibility must explicitly
+ * publish externalWeb.enabled=true with public/optional_auth.
+ */
+setupPublicExternalRuntimeRoutes(
+  app,
+);
+
+
+if (
+  QR_REWARDS_EDITION
+) {
+  registerQrRewardServiceAdapters();
+
+  setupQrRewardRoutes(
+    app,
+  );
+}
+
+
+/*
+ * QR edition enables worker automatically.
+ *
+ * Core backend can enable it explicitly with:
+ * BRIXTA_INTEGRATION_WORKER=1
+ */
+startIntegrationServiceWorker();
 setupUploadRoutes(app);
 setupApplianceAdminRoutes(
   app,
@@ -191,6 +244,9 @@ app.listen(
     );
     console.log(
       ` Server: http://localhost:${PORT}`,
+    );
+    console.log(
+      ` Backend edition: ${process.env.BRIXTA_BACKEND_EDITION ?? "core"}`,
     );
     console.log(
       ` Primitives: ${PLATFORM_PRIMITIVES.version}`,
