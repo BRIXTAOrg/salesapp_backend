@@ -19,6 +19,10 @@ import {
 } from "./deviceRoutes";
 
 import {
+  registerFieldRecordRoutes,
+} from "./fieldRecordRoutes";
+
+import {
   registerLegacyRecordRoutes,
 } from "./legacyRecordRoutes";
 
@@ -53,4 +57,6 @@ export default function setupMobilePlatformRoutes(
   registerDataRoutes(app);
   registerWorkflowRoutes(app);
   registerLegacyRecordRoutes(app);
+  // BRIXTA_FIELD_APP_V1: imported lists worked in the field.
+  registerFieldRecordRoutes(app);
 }

@@ -8,7 +8,10 @@ import {
   type MobileJwtPayload,
   verifyMobileToken,
 } from "../auth/jwt";
+import { eq } from "drizzle-orm";
+
 import { withTenantSchema, type AppDatabase } from "../db/db";
+import { users } from "../db/schema";
 
 export type AuthUserPayload = MobileJwtPayload;
 
@@ -84,7 +87,36 @@ export function withTenantDb<Req extends AuthRequest = AuthRequest>(
     }
 
     try {
-      await withTenantSchema(schemaName, (db) => handler(req, res, db) as Promise<void>);
+      await withTenantSchema(schemaName, async (db) => {
+        // BRIXTA_LIVE_MOBILE_ACCESS_V1: a token is only as good as the
+        // account behind it. Deactivating an employee (or switching off
+        // their sales-app access) stops their app on the next request,
+        // not 7 days later when the token expires.
+        const [current] = await db
+          .select({
+            status: users.status,
+            isSalesAppUser: users.isSalesAppUser,
+          })
+          .from(users)
+          .where(eq(users.id, req.user!.userId))
+          .limit(1);
+
+        if (
+          !current ||
+          current.status !== "active" ||
+          !current.isSalesAppUser
+        ) {
+          res.status(403).json({
+            success: false,
+            code: "ACCOUNT_INACTIVE",
+            error:
+              "Mobile access is disabled for this employee. Contact management.",
+          });
+          return;
+        }
+
+        await handler(req, res, db);
+      });
     } catch (error) {
       console.error("Tenant-scoped route error:", error);
 

@@ -34,6 +34,14 @@ import {
   signMobileToken,
 } from "./jwt";
 
+import {
+  clearAccountFailures,
+  loginRules,
+  recordFailure,
+  throttleWait,
+  tooManyAttemptsMessage,
+} from "./loginThrottle";
+
 type UserRow =
   InferSelectModel<
     typeof users
@@ -44,11 +52,38 @@ type LoginOutcome =
       ok: false;
       status: number;
       error: string;
+      countsAsFailure?: boolean;
     }
   | {
       ok: true;
       user: UserRow;
     };
+
+// A real hash of a random value, so an unknown login spends the same time
+// as a wrong password and response timing does not reveal accounts.
+let dummyHash:
+  | Promise<string>
+  | null = null;
+
+function burnPasswordCheck(
+  password: string,
+) {
+  dummyHash ??=
+    bcrypt.hash(
+      `brixta-dummy-${Date.now()}-${Math.random()}`,
+      12,
+    );
+
+  return dummyHash.then(
+    (hash) =>
+      bcrypt
+        .compare(
+          password || "x",
+          hash,
+        )
+        .catch(() => false),
+  );
+}
 
 export default function setupAuthRoutes(
   app: Express,
@@ -90,6 +125,36 @@ export default function setupAuthRoutes(
             });
         }
 
+        // BRIXTA_LOGIN_HARDENING_V1
+        const throttle =
+          loginRules({
+            scope: "mobile-login",
+            address:
+              req.ip ??
+              req.socket.remoteAddress ??
+              "unknown",
+            account: `${String(companyCode).trim()}:${loginIdentifier}`,
+          });
+
+        const wait =
+          throttleWait(throttle);
+
+        if (wait > 0) {
+          res.setHeader(
+            "retry-after",
+            String(wait),
+          );
+
+          return res
+            .status(429)
+            .json({
+              success: false,
+              code: "TOO_MANY_ATTEMPTS",
+              error:
+                tooManyAttemptsMessage(wait),
+            });
+        }
+
         const [org] =
           await db
             .select({
@@ -116,6 +181,11 @@ export default function setupAuthRoutes(
             .limit(1);
 
         if (!org) {
+          await burnPasswordCheck(
+            String(password),
+          );
+          recordFailure(throttle);
+
           return res
             .status(401)
             .json({
@@ -148,34 +218,16 @@ export default function setupAuthRoutes(
                   )
                   .limit(1);
 
-              if (
-                !user ||
-                !user.isSalesAppUser
-              ) {
-                return {
-                  ok: false,
-                  status: 401,
-                  error:
-                    "Invalid login credentials.",
-                };
-              }
-
-              if (
-                user.status !==
-                "active"
-              ) {
-                return {
-                  ok: false,
-                  status: 403,
-                  error:
-                    "This employee account is inactive. Contact management.",
-                };
-              }
-
+              // Password first: account state is only revealed to
+              // someone who already knows the password.
               let passwordMatches =
                 false;
 
-              if (
+              if (!user) {
+                await burnPasswordCheck(
+                  String(password),
+                );
+              } else if (
                 user.salesAppPasswordHash
               ) {
                 passwordMatches =
@@ -186,6 +238,10 @@ export default function setupAuthRoutes(
               } else if (
                 user.salesAppPassword
               ) {
+                await burnPasswordCheck(
+                  String(password),
+                );
+
                 passwordMatches =
                   user.salesAppPassword ===
                   String(password);
@@ -214,14 +270,43 @@ export default function setupAuthRoutes(
                       ),
                     );
                 }
+              } else {
+                await burnPasswordCheck(
+                  String(password),
+                );
               }
 
-              if (!passwordMatches) {
+              if (
+                !user ||
+                !passwordMatches
+              ) {
                 return {
                   ok: false,
                   status: 401,
                   error:
                     "Invalid login credentials.",
+                  countsAsFailure: true,
+                };
+              }
+
+              if (!user.isSalesAppUser) {
+                return {
+                  ok: false,
+                  status: 403,
+                  error:
+                    "Sales app access is not enabled for this account. Contact management.",
+                };
+              }
+
+              if (
+                user.status !==
+                "active"
+              ) {
+                return {
+                  ok: false,
+                  status: 403,
+                  error:
+                    "This employee account is inactive. Contact management.",
                 };
               }
 
@@ -263,6 +348,10 @@ export default function setupAuthRoutes(
           );
 
         if (!result.ok) {
+          if (result.countsAsFailure) {
+            recordFailure(throttle);
+          }
+
           return res
             .status(
               result.status,
@@ -273,6 +362,8 @@ export default function setupAuthRoutes(
                 result.error,
             });
         }
+
+        clearAccountFailures(throttle);
 
         const { user } =
           result;
