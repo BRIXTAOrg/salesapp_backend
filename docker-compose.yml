@@ -6,14 +6,14 @@ services:
     restart: unless-stopped
     # Maps host port 4000 to the container's exposed port 8000 (from your Dockerfile)
     ports:
-      - "55009:8000"
+      - "55006:8000"
     # Tells Docker Compose to read environment variables from a .env file in the same directory
     env_file:
       - .env
 
     environment:
       - DATABASE_URL=${DATABASE_URL}
-      - DB_SCHEMA=${DB_SCHEMA}
+      #- DB_SCHEMA=${DB_SCHEMA}
       - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - SUPABASE_URL=${SUPABASE_URL}
@@ -23,14 +23,9 @@ services:
       - NODE_ENV=${NODE_ENV}
       - ADMIN_SERVICE_SECRET=${ADMIN_SERVICE_SECRET}
 
-  #nginx
-  # nginx:
-  #   image: nginx:alpine
-  #   # Exposes Nginx to the Debian host on port 8080 (Cloudflare connects here)
-  #   ports:
-  #     - "8010:80"
-  #   volumes:
-  #     - ./nginx.conf:/etc/nginx/nginx.conf:ro
-  #   depends_on:
-  #     - eurofoamappserver
-  #   restart: always
+    networks:
+      - brixta_appserver_net
+
+networks:
+  brixta_appserver_net:
+    name: brixta_appserver_net
