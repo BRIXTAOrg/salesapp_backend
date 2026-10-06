@@ -9,6 +9,7 @@ import {
   asc,
   eq,
   inArray,
+  sql,
 } from "drizzle-orm";
 
 import {
@@ -27,6 +28,101 @@ import {
 import type {
   AppDatabase,
 } from "../db/db";
+
+/*
+ * BRIXTA_EMPLOYEE_CREATE_SAFE_V1
+ *
+ * Creating an employee is all-or-nothing: if any part fails (manager rule,
+ * roles, responsibilities) nothing is saved, so a retry never hits
+ * "already exists". Duplicate IDs, phones and emails get a plain answer
+ * that names who already has them.
+ */
+async function employeeClash(
+  db: AppDatabase,
+  input: {
+    employeeCode: string;
+    phoneNumber: string | null;
+    email: string | null;
+  },
+): Promise<string | null> {
+  const nameOf = (row: { displayName: string | null; username: string | null; id: number }) =>
+    row.displayName ?? row.username ?? `employee #${row.id}`;
+
+  const [byCode] = await db
+    .select({ id: users.id, displayName: users.displayName, username: users.username })
+    .from(users)
+    .where(sql`lower(${users.salesmanLoginId}) = lower(${input.employeeCode})`)
+    .limit(1);
+  if (byCode) {
+    return `Employee ID ${input.employeeCode} is already used by ${nameOf(byCode)}.`;
+  }
+
+  if (input.phoneNumber) {
+    const [byPhone] = await db
+      .select({ id: users.id, displayName: users.displayName, username: users.username })
+      .from(users)
+      .where(and(eq(users.phoneNumber, input.phoneNumber), eq(users.status, "active")))
+      .limit(1);
+    if (byPhone) {
+      return `Phone ${input.phoneNumber} already belongs to ${nameOf(byPhone)}. The app signs in with phone numbers, so each one must be unique.`;
+    }
+  }
+
+  if (input.email) {
+    const [byEmail] = await db
+      .select({ id: users.id, displayName: users.displayName, username: users.username })
+      .from(users)
+      .where(sql`lower(${users.email}) = lower(${input.email})`)
+      .limit(1);
+    if (byEmail) {
+      return `${input.email} is already used by ${nameOf(byEmail)}.`;
+    }
+  }
+
+  return null;
+}
+
+/*
+ * BRIXTA_ADMIN_LOCKOUT_GUARD_V1
+ * A company must always keep at least one active person who can sign in to
+ * the dashboard with full access, and nobody can switch themselves off.
+ */
+async function activeAdminCount(db: AppDatabase): Promise<number> {
+  const result = await db.execute(sql`
+    SELECT count(DISTINCT u.id)::int AS count
+      FROM users u
+      JOIN user_roles ur ON ur.user_id = u.id
+      JOIN roles r ON r.id = ur.role_id
+     WHERE u.status = 'active'
+       AND u.is_dashboard_user = true
+       AND 'ALL_ACCESS' = ANY(r.granted_perms)
+  `);
+  const row = result.rows[0] as { count?: number | string } | undefined;
+  return Number(row?.count ?? 0);
+}
+
+async function hasDashboardPermissions(db: AppDatabase, userId: number): Promise<boolean> {
+  const result = await db.execute(sql`
+    SELECT 1
+      FROM user_roles ur
+      JOIN roles r ON r.id = ur.role_id
+     WHERE ur.user_id = ${userId}
+       AND cardinality(r.granted_perms) > 0
+     LIMIT 1
+  `);
+  return result.rows.length > 0;
+}
+
+function friendlyCreateError(error: unknown): string {
+  const code = (error as { code?: string } | null)?.code;
+  const constraint = String((error as { constraint?: string } | null)?.constraint ?? "");
+  if (code === "23505") {
+    if (constraint.includes("salesman_login_id")) return "That employee ID is already in use.";
+    if (constraint.includes("device")) return "That device is already linked to another employee.";
+    return "Someone with these details already exists.";
+  }
+  return error instanceof Error && error.message ? error.message : "Unable to create employee.";
+}
 
 import {
   withAdminTenantDb,
@@ -899,19 +995,30 @@ export function registerEmployeeAdminRoutes(
               "",
           );
 
-        if (
-          !employeeCode ||
-          !name ||
-          password.length < 6
-        ) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error:
-                "Employee code, name and password of at least 6 characters are required.",
-            });
+        if (!name) {
+          return res.status(400).json({ success: false, error: "Enter the employee's name.", field: "name" });
         }
+        if (!employeeCode) {
+          return res.status(400).json({ success: false, error: "Enter an employee ID.", field: "employeeCode" });
+        }
+        if (password.length < 6) {
+          return res.status(400).json({
+            success: false,
+            error: "The app password needs at least 6 characters.",
+            field: "password",
+          });
+        }
+
+        const clash = await employeeClash(db, {
+          employeeCode,
+          phoneNumber: String(req.body?.phoneNumber ?? "").trim() || null,
+          email: String(req.body?.email ?? "").trim() || null,
+        });
+        if (clash) {
+          return res.status(409).json({ success: false, error: clash });
+        }
+
+        await db.execute(sql`SAVEPOINT brixta_create_employee`);
 
         try {
           const ids =
@@ -1108,6 +1215,8 @@ export function registerEmployeeAdminRoutes(
             },
           );
 
+          await db.execute(sql`RELEASE SAVEPOINT brixta_create_employee`);
+
           return res
             .status(201)
             .json({
@@ -1121,14 +1230,16 @@ export function registerEmployeeAdminRoutes(
                   created.displayName,
               },
             });
-        } catch (error: any) {
+        } catch (error: unknown) {
+          // Undo everything this request wrote, keep the transaction usable.
+          await db
+            .execute(sql`ROLLBACK TO SAVEPOINT brixta_create_employee`)
+            .catch(() => undefined);
           return res
             .status(400)
             .json({
               success: false,
-              error:
-                error?.message ??
-                "Unable to create employee.",
+              error: friendlyCreateError(error),
             });
         }
       },
@@ -1182,6 +1293,28 @@ export function registerEmployeeAdminRoutes(
             });
         }
 
+        // BRIXTA_EMPLOYEE_UPDATE_SAFE_V1: a bad manager rule or a clash
+        // undoes the whole save and comes back as a readable message.
+        if ("phoneNumber" in (req.body ?? {})) {
+          const phone = String(req.body.phoneNumber ?? "").trim();
+          if (phone && phone !== (before.phoneNumber ?? "")) {
+            const [taken] = await db
+              .select({ id: users.id, displayName: users.displayName, username: users.username })
+              .from(users)
+              .where(and(eq(users.phoneNumber, phone), eq(users.status, "active")))
+              .limit(1);
+            if (taken && taken.id !== userId) {
+              return res.status(409).json({
+                success: false,
+                error: `Phone ${phone} already belongs to ${taken.displayName ?? taken.username ?? `employee #${taken.id}`}.`,
+              });
+            }
+          }
+        }
+
+        await db.execute(sql`SAVEPOINT brixta_update_employee`);
+        try {
+
         const update: any = {
           updatedAt:
             new Date().toISOString(),
@@ -1210,11 +1343,14 @@ export function registerEmployeeAdminRoutes(
           ) {
             const raw =
               req.body[bodyKey];
-            update[dbKey] =
+            const cleaned =
               raw === null
                 ? null
                 : String(raw).trim() ||
                   null;
+            // Email is required in the database: an empty box keeps the old one.
+            if (dbKey === "email" && !cleaned) continue;
+            update[dbKey] = cleaned;
           }
         }
 
@@ -1330,6 +1466,8 @@ export function registerEmployeeAdminRoutes(
           },
         );
 
+        await db.execute(sql`RELEASE SAVEPOINT brixta_update_employee`);
+
         return res.json({
           success: true,
           employee:
@@ -1337,6 +1475,15 @@ export function registerEmployeeAdminRoutes(
 
           reporting,
         });
+        } catch (error: unknown) {
+          await db
+            .execute(sql`ROLLBACK TO SAVEPOINT brixta_update_employee`)
+            .catch(() => undefined);
+          return res.status(400).json({
+            success: false,
+            error: friendlyCreateError(error).replace("create", "save"),
+          });
+        }
       },
     ),
   );
@@ -1377,6 +1524,20 @@ export function registerEmployeeAdminRoutes(
             });
         }
 
+        if (
+          status !== "active" &&
+          req.adminActor?.userId === userId
+        ) {
+          return res.status(400).json({
+            success: false,
+            code: "SELF_LOCKOUT",
+            error: "You can't suspend yourself. Ask another admin to do it.",
+          });
+        }
+
+        const adminsBefore = await activeAdminCount(db);
+        await db.execute(sql`SAVEPOINT brixta_status_change`);
+
         const [updated] = await db
           .update(users)
           .set({
@@ -1393,6 +1554,7 @@ export function registerEmployeeAdminRoutes(
           .returning();
 
         if (!updated) {
+          await db.execute(sql`ROLLBACK TO SAVEPOINT brixta_status_change`);
           return res
             .status(404)
             .json({
@@ -1401,6 +1563,17 @@ export function registerEmployeeAdminRoutes(
                 "Employee not found.",
             });
         }
+
+        if (status !== "active" && adminsBefore > 0 && (await activeAdminCount(db)) === 0) {
+          await db.execute(sql`ROLLBACK TO SAVEPOINT brixta_status_change`);
+          return res.status(400).json({
+            success: false,
+            code: "LAST_ADMIN",
+            error: "This is the last admin. Give someone else admin access before suspending them.",
+          });
+        }
+
+        await db.execute(sql`RELEASE SAVEPOINT brixta_status_change`);
 
         // BRIXTA_REPORTING_STATUS_REFRESH
         await refreshReportingCaches(
@@ -2066,6 +2239,10 @@ export function registerEmployeeAdminRoutes(
               });
           }
 
+          // BRIXTA_ADMIN_LOCKOUT_GUARD_V1
+          const adminsBefore = await activeAdminCount(db);
+          await db.execute(sql`SAVEPOINT brixta_roles_change`);
+
           await db
             .delete(userRoles)
             .where(
@@ -2087,6 +2264,31 @@ export function registerEmployeeAdminRoutes(
                 ),
               );
           }
+
+          if (adminsBefore > 0 && (await activeAdminCount(db)) === 0) {
+            await db.execute(sql`ROLLBACK TO SAVEPOINT brixta_roles_change`);
+            return res.status(400).json({
+              success: false,
+              code: "LAST_ADMIN",
+              error:
+                "Someone must keep full admin access. Give another person the admin role first.",
+            });
+          }
+
+          if (
+            req.adminActor?.userId === userId &&
+            !(await hasDashboardPermissions(db, userId))
+          ) {
+            await db.execute(sql`ROLLBACK TO SAVEPOINT brixta_roles_change`);
+            return res.status(400).json({
+              success: false,
+              code: "SELF_LOCKOUT",
+              error:
+                "These roles would lock you out of the dashboard. Keep at least one role with dashboard permissions.",
+            });
+          }
+
+          await db.execute(sql`RELEASE SAVEPOINT brixta_roles_change`);
 
           // BRIXTA_REPORTING_ROLE_REFRESH
           await refreshReportingCaches(
