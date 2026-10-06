@@ -3267,6 +3267,72 @@ export async function executeKernelAction(
     };
   }
 
+  /*
+   * BRIXTA_ASSIGNED_WORK_LIFECYCLE_V1
+   *
+   * A concrete CRM/list assignment is represented by work_items and linked
+   * to this Responsibility record through dynamic_submissions.work_item_id.
+   *
+   * First real action:
+   *   assigned -> in_progress
+   *
+   * Terminal Responsibility state:
+   *   in_progress -> completed
+   *
+   * Therefore the employee's Work inbox stays synchronized automatically.
+   */
+  if (record.workItemId) {
+    const processState =
+      String(
+        nextState.process ??
+        record.status ??
+        "",
+      );
+
+    const stateDefinition =
+      resolved.kernel
+        .runtimeWorld
+        .states
+        .find(
+          (state) =>
+            state.id ===
+            processState,
+        );
+
+    const completed =
+      stateDefinition
+        ?.terminal ===
+        true;
+
+    await db
+      .update(
+        workItems,
+      )
+      .set({
+        status:
+          completed
+            ? "completed"
+            : "in_progress",
+
+        startedAt:
+          sql`COALESCE(${workItems.startedAt}, NOW())`,
+
+        completedAt:
+          completed
+            ? new Date()
+            : null,
+
+        updatedAt:
+          new Date(),
+      })
+      .where(
+        eq(
+          workItems.id,
+          record.workItemId,
+        ),
+      );
+  }
+
   world.recordId = record.id;
   world.objects.current_record = record;
   world.context.record = record;
