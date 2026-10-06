@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import type {
   Router,
 } from "express";
@@ -25,7 +27,15 @@ import {
 import {
   approvalRequests,
   dynamicSubmissions,
+  workItems,
 } from "../db/applianceSchema";
+
+import {
+  dataSources,
+  entityRecords,
+  entityTypes,
+  recordLinks,
+} from "../db/platformVNextSchema";
 
 import {
   actionDefinitions,
@@ -63,6 +73,10 @@ import {
   sendResult,
 } from "../mobile/http";
 
+import {
+  getPublishedRuntimeManifest,
+} from "../platform/vnext/runtimeManifest";
+
 function objectValue(
   value: unknown,
 ): Record<string, unknown> {
@@ -76,6 +90,755 @@ function objectValue(
 export function registerRuntimeAdminRoutes(
   router: Router,
 ) {
+  /*
+   * BRIXTA_RECORD_ASSIGNMENT_V1
+   *
+   * Turn canonical business records (Dealer / Site / Shop / Machine / etc.)
+   * into concrete employee work WITHOUT copying/importing them into another
+   * disconnected system.
+   *
+   * Source Entity Record
+   *      ↓
+   * Work Item
+   *      ↓
+   * concrete Responsibility record
+   *      ↓
+   * record_links traceability
+   *      ↓
+   * existing mobile Work inbox
+   */
+  router.post(
+    "/work-items",
+    withAdminTenantDb<AdminRequest>(
+      async (
+        req,
+        res,
+        db,
+      ) => {
+        const actorUserId =
+          req.adminActor?.userId ??
+          null;
+
+        const responsibilityKey =
+          String(
+            req.body?.responsibilityKey ??
+            "",
+          )
+            .trim()
+            .toLowerCase();
+
+        const sourceEntityTypeKey =
+          String(
+            req.body?.sourceEntityTypeKey ??
+            "",
+          )
+            .trim()
+            .toLowerCase();
+
+        const assigneeUserId =
+          Number(
+            req.body?.assigneeUserId,
+          );
+
+        const sourceRecordIds: string[] =
+          Array.isArray(
+            req.body?.sourceRecordIds,
+          )
+            ? [
+                ...new Set<string>(
+                  (req.body.sourceRecordIds as unknown[])
+                    .map(
+                      (value: unknown) =>
+                        String(value).trim(),
+                    )
+                    .filter(
+                      (value): value is string =>
+                        value.length > 0,
+                    ),
+                ),
+              ].slice(0, 200)
+            : [];
+
+        const priority =
+          [
+            "low",
+            "normal",
+            "high",
+            "urgent",
+          ].includes(
+            String(
+              req.body?.priority ??
+              "normal",
+            ),
+          )
+            ? String(
+                req.body?.priority ??
+                "normal",
+              )
+            : "normal";
+
+        const dueAtRaw =
+          String(
+            req.body?.dueAt ??
+            "",
+          ).trim();
+
+        const dueAt =
+          dueAtRaw
+            ? new Date(
+                dueAtRaw,
+              )
+            : null;
+
+        if (
+          !responsibilityKey
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              error:
+                "responsibilityKey is required.",
+            });
+        }
+
+        if (
+          !sourceEntityTypeKey
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              error:
+                "sourceEntityTypeKey is required.",
+            });
+        }
+
+        if (
+          !Number.isInteger(
+            assigneeUserId,
+          ) ||
+          assigneeUserId <= 0
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              error:
+                "A valid employee is required.",
+            });
+        }
+
+        if (
+          sourceRecordIds.length === 0
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              error:
+                "Choose at least one business record.",
+            });
+        }
+
+        if (
+          dueAt &&
+          Number.isNaN(
+            dueAt.getTime(),
+          )
+        ) {
+          return res
+            .status(400)
+            .json({
+              success: false,
+              error:
+                "dueAt is invalid.",
+            });
+        }
+
+        const [
+          responsibility,
+        ] =
+          await db
+            .select({
+              id:
+                mobileCapabilities.id,
+
+              key:
+                mobileCapabilities.key,
+
+              title:
+                mobileCapabilities.title,
+
+              isActive:
+                mobileCapabilities.isActive,
+            })
+            .from(
+              mobileCapabilities,
+            )
+            .where(
+              and(
+                eq(
+                  mobileCapabilities.key,
+                  responsibilityKey,
+                ),
+
+                eq(
+                  mobileCapabilities.isActive,
+                  true,
+                ),
+              ),
+            )
+            .limit(1);
+
+        if (
+          !responsibility
+        ) {
+          return res
+            .status(404)
+            .json({
+              success: false,
+              error:
+                "Published Responsibility not found.",
+            });
+        }
+
+        const published =
+          await getPublishedRuntimeManifest(
+            db,
+            responsibility.id,
+          );
+
+        if (
+          !published
+        ) {
+          return res
+            .status(409)
+            .json({
+              success: false,
+              error:
+                "Publish this Responsibility before assigning records.",
+            });
+        }
+
+        const [
+          assignee,
+        ] =
+          await db
+            .select({
+              id:
+                users.id,
+
+              name:
+                users.displayName,
+
+              username:
+                users.username,
+
+              status:
+                users.status,
+
+              mobileAccess:
+                users.isSalesAppUser,
+            })
+            .from(users)
+            .where(
+              eq(
+                users.id,
+                assigneeUserId,
+              ),
+            )
+            .limit(1);
+
+        if (
+          !assignee ||
+          assignee.status !==
+            "active" ||
+          assignee.mobileAccess !==
+            true
+        ) {
+          return res
+            .status(404)
+            .json({
+              success: false,
+              error:
+                "Active mobile employee not found.",
+            });
+        }
+
+        const [
+          entityType,
+        ] =
+          await db
+            .select()
+            .from(
+              entityTypes,
+            )
+            .where(
+              and(
+                eq(
+                  entityTypes.key,
+                  sourceEntityTypeKey,
+                ),
+
+                eq(
+                  entityTypes.isActive,
+                  true,
+                ),
+              ),
+            )
+            .limit(1);
+
+        if (
+          !entityType
+        ) {
+          return res
+            .status(404)
+            .json({
+              success: false,
+              error:
+                "Business list not found.",
+            });
+        }
+
+        const [
+          source,
+        ] =
+          await db
+            .select()
+            .from(
+              dataSources,
+            )
+            .where(
+              and(
+                eq(
+                  dataSources.sourceType,
+                  "entity_store",
+                ),
+
+                eq(
+                  dataSources.sourceRef,
+                  entityType.key,
+                ),
+
+                eq(
+                  dataSources.isActive,
+                  true,
+                ),
+              ),
+            )
+            .limit(1);
+
+        if (
+          !source
+        ) {
+          return res
+            .status(409)
+            .json({
+              success: false,
+              error:
+                "This list is not available as business data yet. Open Connections/Data once so BRIXTA can register the list as a Data Source.",
+            });
+        }
+
+        const records =
+          await db
+            .select({
+              id:
+                entityRecords.id,
+
+              externalKey:
+                entityRecords.externalKey,
+
+              status:
+                entityRecords.status,
+
+              data:
+                entityRecords.data,
+            })
+            .from(
+              entityRecords,
+            )
+            .where(
+              and(
+                eq(
+                  entityRecords.entityTypeId,
+                  entityType.id,
+                ),
+
+                inArray(
+                  entityRecords.id,
+                  sourceRecordIds,
+                ),
+
+                ne(
+                  entityRecords.status,
+                  "deleted",
+                ),
+              ),
+            );
+
+        if (
+          records.length === 0
+        ) {
+          return res
+            .status(404)
+            .json({
+              success: false,
+              error:
+                "None of the selected business records exist.",
+            });
+        }
+
+        const initialState =
+          published.kernel
+            ?.runtimeWorld
+            .states
+            .find(
+              (state) =>
+                state.initial === true,
+            )
+            ?.id ??
+          published.kernel
+            ?.runtimeWorld
+            .states[0]
+            ?.id ??
+          "draft";
+
+        const created: Array<{
+          workItemId: string;
+          recordId: string;
+          sourceRecordId: string;
+          label: string;
+        }> = [];
+
+        const skipped: Array<{
+          sourceRecordId: string;
+          reason: string;
+        }> = [];
+
+        for (
+          const sourceRecord
+          of records
+        ) {
+          const sourceRecordId =
+            String(
+              sourceRecord.id,
+            );
+
+          const [
+            duplicate,
+          ] =
+            await db
+              .select({
+                id:
+                  workItems.id,
+              })
+              .from(
+                workItems,
+              )
+              .where(
+                and(
+                  eq(
+                    workItems.capabilityId,
+                    responsibility.id,
+                  ),
+
+                  eq(
+                    workItems.assigneeUserId,
+                    assigneeUserId,
+                  ),
+
+                  inArray(
+                    workItems.status,
+                    [
+                      "assigned",
+                      "in_progress",
+                    ],
+                  ),
+
+                  sql`${workItems.payload}->>'sourceRecordId' = ${sourceRecordId}`,
+                ),
+              )
+              .limit(1);
+
+          if (
+            duplicate
+          ) {
+            skipped.push({
+              sourceRecordId,
+              reason:
+                "Already assigned to this employee.",
+            });
+
+            continue;
+          }
+
+          const recordData =
+            objectValue(
+              sourceRecord.data,
+            );
+
+          const displayField =
+            source.displayField ??
+            "name";
+
+          const label =
+            String(
+              recordData[
+                displayField
+              ] ??
+              recordData.name ??
+              recordData.title ??
+              recordData.label ??
+              sourceRecord.externalKey ??
+              sourceRecordId,
+            ).trim() ||
+            sourceRecordId;
+
+          const [
+            workItem,
+          ] =
+            await db
+              .insert(
+                workItems,
+              )
+              .values({
+                capabilityId:
+                  responsibility.id,
+
+                assigneeUserId,
+
+                createdByUserId:
+                  actorUserId,
+
+                title:
+                  `${responsibility.title}: ${label}`,
+
+                description:
+                  String(
+                    req.body
+                      ?.description ??
+                    "",
+                  ).trim() ||
+                  `Assigned from ${entityType.title}.`,
+
+                status:
+                  "assigned",
+
+                priority,
+
+                dueAt,
+
+                payload: {
+                  kind:
+                    "record_assignment",
+
+                  responsibilityKey:
+                    responsibility.key,
+
+                  sourceKey:
+                    source.key,
+
+                  sourceEntityTypeKey:
+                    entityType.key,
+
+                  sourceRecordId,
+
+                  sourceRecordLabel:
+                    label,
+                },
+              })
+              .returning();
+
+          const [
+            responsibilityRecord,
+          ] =
+            await db
+              .insert(
+                dynamicSubmissions,
+              )
+              .values({
+                clientMutationId:
+                  crypto.randomUUID(),
+
+                userId:
+                  assigneeUserId,
+
+                capabilityId:
+                  responsibility.id,
+
+                workItemId:
+                  workItem.id,
+
+                status:
+                  initialState,
+
+                payload: {
+                  __state: {
+                    process:
+                      initialState,
+                  },
+
+                  __source: {
+                    sourceKey:
+                      source.key,
+
+                    sourceType:
+                      "entity_store",
+
+                    entityTypeKey:
+                      entityType.key,
+
+                    recordId:
+                      sourceRecordId,
+
+                    label,
+
+                    data:
+                      recordData,
+                  },
+
+                  __assignment: {
+                    workItemId:
+                      workItem.id,
+
+                    assigneeUserId,
+
+                    assignedByUserId:
+                      actorUserId,
+
+                    assignedAt:
+                      new Date()
+                        .toISOString(),
+                  },
+                },
+              })
+              .returning();
+
+          await db
+            .update(
+              workItems,
+            )
+            .set({
+              payload: {
+                ...objectValue(
+                  workItem.payload,
+                ),
+
+                kind:
+                  "record_assignment",
+
+                responsibilityKey:
+                  responsibility.key,
+
+                recordId:
+                  responsibilityRecord.id,
+
+                sourceKey:
+                  source.key,
+
+                sourceEntityTypeKey:
+                  entityType.key,
+
+                sourceRecordId,
+
+                sourceRecordLabel:
+                  label,
+              },
+
+              updatedAt:
+                new Date(),
+            })
+            .where(
+              eq(
+                workItems.id,
+                workItem.id,
+              ),
+            );
+
+          await db
+            .insert(
+              recordLinks,
+            )
+            .values({
+              fromSourceKey:
+                source.key,
+
+              fromRecordId:
+                sourceRecordId,
+
+              relationKey:
+                "responsibility_record",
+
+              targetSourceKey:
+                `responsibility:${responsibility.key}`,
+
+              targetRecordId:
+                responsibilityRecord.id,
+
+              metadata: {
+                workItemId:
+                  workItem.id,
+
+                assigneeUserId,
+
+                assignedByUserId:
+                  actorUserId,
+
+                assignedAt:
+                  new Date()
+                    .toISOString(),
+              },
+            });
+
+          created.push({
+            workItemId:
+              workItem.id,
+
+            recordId:
+              responsibilityRecord.id,
+
+            sourceRecordId,
+
+            label,
+          });
+        }
+
+        return res
+          .status(201)
+          .json({
+            success: true,
+
+            responsibility: {
+              id:
+                responsibility.id,
+
+              key:
+                responsibility.key,
+
+              title:
+                responsibility.title,
+            },
+
+            employee: {
+              id:
+                assignee.id,
+
+              name:
+                assignee.name ??
+                assignee.username ??
+                `Employee ${assignee.id}`,
+            },
+
+            created,
+
+            skipped,
+          });
+      },
+    ),
+  );
+
   router.get(
     "/records",
     withAdminTenantDb<AdminRequest>(

@@ -23,3 +23,7 @@ npm-debug.log*
 .env.*
 .brixta-backups/
 graphify-out/
+
+# BRIXTA local patch backups
+*.brixta.bak
+*.phase-*.bak
