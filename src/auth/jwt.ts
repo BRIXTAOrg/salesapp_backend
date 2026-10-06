@@ -57,6 +57,13 @@ function isMobileJwtPayload(
   );
 }
 
+// BRIXTA_MOBILE_TOKEN_AUDIENCE_V1
+// Mobile tokens are stamped "brixta-mobile"; dashboard cookies are stamped
+// "brixta-cms". Even when both services share JWT_SECRET, a dashboard
+// cookie can no longer be used as a mobile token (or the other way round).
+export const MOBILE_TOKEN_AUDIENCE =
+  "brixta-mobile";
+
 export function signMobileToken(
   payload: MobileJwtPayload,
 ): string {
@@ -64,8 +71,33 @@ export function signMobileToken(
     payload,
     getJwtSecret(),
     {
+      algorithm: "HS256",
+      audience: MOBILE_TOKEN_AUDIENCE,
       expiresIn: "7d",
     },
+  );
+}
+
+function hasMobileAudience(
+  decoded: JwtPayload,
+) {
+  if (decoded.aud === undefined) {
+    // Tokens issued before the audience stamp (they expire within 7 days).
+    // Dashboard cookies always carry a permissions list; mobile tokens
+    // never do.
+    return !Object.prototype.hasOwnProperty.call(
+      decoded,
+      "permissions",
+    );
+  }
+
+  const audiences =
+    Array.isArray(decoded.aud)
+      ? decoded.aud
+      : [decoded.aud];
+
+  return audiences.includes(
+    MOBILE_TOKEN_AUDIENCE,
   );
 }
 
@@ -76,10 +108,14 @@ export function verifyMobileToken(
     jwt.verify(
       token,
       getJwtSecret(),
+      {
+        algorithms: ["HS256"],
+      },
     );
 
   if (
     typeof decoded === "string" ||
+    !hasMobileAudience(decoded) ||
     !isMobileJwtPayload(decoded)
   ) {
     throw new Error(
