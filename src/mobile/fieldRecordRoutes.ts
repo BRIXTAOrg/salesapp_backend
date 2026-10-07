@@ -39,6 +39,8 @@ import {
   cleanSectionValues,
   displayValue,
   distanceMeters,
+  inFieldRecordScope,
+  matchesFieldLens,
   nextStage,
   pointFrom,
   readFieldAppConfig,
@@ -63,10 +65,6 @@ import {
  *   POST /api/salesApp/field/records/:id/sections/:section
  */
 
-type Lens = "mine" | "todo" | "active" | "followups" | "closed" | "all";
-
-const LENSES: Lens[] = ["mine", "todo", "active", "followups", "closed", "all"];
-const TODO_STAGES = new Set(["new", "visited"]);
 const MAX_LIST_ROWS = 20_000;
 const MUTATION_ID = /^[A-Za-z0-9_-]{8,80}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -121,18 +119,6 @@ async function fieldLists(db: AppDatabase) {
   return lists;
 }
 
-function lensOf(config: FieldAppConfig, state: FieldState): Exclude<Lens, "all" | "mine" | "followups"> {
-  const stage = stageOf(config, state.stage);
-  if (stage.closed) return "closed";
-  if (TODO_STAGES.has(stage.key)) return "todo";
-  return "active";
-}
-
-function isFollowUp(config: FieldAppConfig, state: FieldState) {
-  const stage = stageOf(config, state.stage);
-  return !stage.closed && (stage.key === "follow_up" || Boolean(state.followUpAt));
-}
-
 function titleOf(config: FieldAppConfig, data: Record<string, unknown>, externalKey: string | null) {
   const fromField = config.titleField ? displayValue(data[config.titleField]) : "";
   return fromField || externalKey || "Untitled";
@@ -169,11 +155,35 @@ function summaryOf(
 ) {
   const state = readFieldState(row.data);
   const location = config.locationField ? pointFrom(row.data[config.locationField]) : null;
+
+  const experience = config.experience.list;
+
+  const badgeValue =
+    experience.badgeField
+      ? displayValue(row.data[experience.badgeField])
+      : "";
+
+  const badgeRule = experience.badgeToneRules.find(
+    (rule) => rule.value.toLowerCase() === badgeValue.toLowerCase(),
+  );
+
+  const cardValues = experience.cardFields
+    .map((key) => ({
+      key,
+      label: key,
+      value: displayValue(row.data[key]),
+    }))
+    .filter((item) => item.value !== "");
+
   return {
     id: row.id,
     key: row.externalKey,
     title: titleOf(config, row.data, row.externalKey),
     subtitle: subtitleOf(config, row.data),
+    badge: badgeValue
+      ? { value: badgeValue, tone: badgeRule?.tone ?? "neutral" }
+      : null,
+    cardValues,
     priority: priorityOf(config, row.data),
     location,
     distanceM: origin && location ? Math.round(distanceMeters(origin, location)) : null,
@@ -383,7 +393,13 @@ export function registerFieldRecordRoutes(app: Express) {
       if (!match) return fail(res, 404, "This list is not in the field app.", "FIELD_LIST_NOT_FOUND");
       const { row: type, config } = match;
 
-      const lens: Lens = LENSES.includes(req.query.lens as Lens) ? (req.query.lens as Lens) : "todo";
+      const requestedLens = String(
+        req.query.lens ?? config.experience.list.defaultLens,
+      );
+      const lens =
+        config.experience.list.lenses.find((item) => item.key === requestedLens) ??
+        config.experience.list.lenses[0];
+
       const q = String(req.query.q ?? "").trim().toLowerCase().slice(0, 80);
       const limit = Math.min(Math.max(Number(req.query.limit) || 60, 1), 200);
       const origin = originFrom(req.query as Record<string, unknown>);
@@ -395,6 +411,9 @@ export function registerFieldRecordRoutes(app: Express) {
             ...config.subtitleFields,
             config.priorityField,
             config.locationField,
+            config.experience.list.badgeField,
+            ...config.experience.list.cardFields,
+            ...config.experience.list.lenses.map((lens) => lens.field),
             "__field",
           ].filter((key): key is string => Boolean(key)),
         ),
@@ -414,51 +433,133 @@ export function registerFieldRecordRoutes(app: Express) {
         .where(and(eq(entityRecords.entityTypeId, type.id), eq(entityRecords.status, "active")))
         .limit(MAX_LIST_ROWS);
 
-      const counts: Record<Lens, number> = { mine: 0, todo: 0, active: 0, followups: 0, closed: 0, all: rows.length };
+      const counts: Record<string, number> = Object.fromEntries(
+        config.experience.list.lenses.map((item) => [item.key, 0]),
+      );
+
       const picked = [];
+
       for (const row of rows) {
         const data = (row.data ?? {}) as Record<string, unknown>;
         const state = readFieldState(data);
-        const rowLens = lensOf(config, state);
-        const followUp = isFollowUp(config, state);
-        const mine = state.assignee?.userId === userId && rowLens !== "closed";
-        counts[rowLens] += 1;
-        if (followUp) counts.followups += 1;
-        if (mine) counts.mine += 1;
 
-        const inLens =
-          lens === "all" ||
-          (lens === "followups" ? followUp : lens === "mine" ? mine : rowLens === lens);
-        if (!inLens) continue;
+        if (!inFieldRecordScope(config, state, userId)) continue;
 
-        const summary = summaryOf(config, { ...row, data }, origin, userId);
+        for (const lensDefinition of config.experience.list.lenses) {
+          if (
+            matchesFieldLens(
+              config,
+              lensDefinition,
+              state,
+              data,
+              userId,
+            )
+          ) {
+            counts[lensDefinition.key] =
+              (counts[lensDefinition.key] ?? 0) + 1;
+          }
+        }
+
+        if (
+          lens &&
+          !matchesFieldLens(
+            config,
+            lens,
+            state,
+            data,
+            userId,
+          )
+        ) {
+          continue;
+        }
+
+        const summary = summaryOf(
+          config,
+          { ...row, data },
+          origin,
+          userId,
+        );
+
         if (q) {
-          const haystack = [summary.key ?? "", summary.title, ...summary.subtitle].join(" ").toLowerCase();
+          const haystack = [
+            summary.key ?? "",
+            summary.title,
+            ...summary.subtitle,
+            summary.badge?.value ?? "",
+            ...summary.cardValues.map((item) => item.value),
+          ]
+            .join(" ")
+            .toLowerCase();
+
           if (!haystack.includes(q)) continue;
         }
+
         picked.push(summary);
       }
 
+      const sortMode = config.experience.list.sort;
+
       picked.sort((a, b) => {
-        if (lens === "followups") {
-          return String(a.followUpAt ?? "9999").localeCompare(String(b.followUpAt ?? "9999"));
+        if (sortMode === "follow_up") {
+          return String(a.followUpAt ?? "9999").localeCompare(
+            String(b.followUpAt ?? "9999"),
+          );
         }
+
+        if (sortMode === "updated") {
+          return String(b.updatedAt ?? "").localeCompare(
+            String(a.updatedAt ?? ""),
+          );
+        }
+
+        if (sortMode === "distance" && origin) {
+          return (
+            (a.distanceM ?? Number.POSITIVE_INFINITY) -
+            (b.distanceM ?? Number.POSITIVE_INFINITY)
+          );
+        }
+
+        if (sortMode === "priority") {
+          const pa = a.priority ?? Number.NEGATIVE_INFINITY;
+          const pb = b.priority ?? Number.NEGATIVE_INFINITY;
+          if (pa !== pb) return pb - pa;
+          return String(b.updatedAt ?? "").localeCompare(
+            String(a.updatedAt ?? ""),
+          );
+        }
+
+        /*
+         * SMART = old BRIXTA behaviour:
+         * follow-up lens -> next follow-up first
+         * otherwise nearest first when GPS exists, then priority, then recent.
+         */
+        if (lens?.kind === "followups") {
+          const follow = String(a.followUpAt ?? "9999").localeCompare(
+            String(b.followUpAt ?? "9999"),
+          );
+          if (follow !== 0) return follow;
+        }
+
         if (origin) {
           const da = a.distanceM ?? Number.POSITIVE_INFINITY;
           const db_ = b.distanceM ?? Number.POSITIVE_INFINITY;
           if (da !== db_) return da - db_;
         }
+
         const pa = a.priority ?? Number.NEGATIVE_INFINITY;
         const pb = b.priority ?? Number.NEGATIVE_INFINITY;
         if (pa !== pb) return pb - pa;
-        return String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? ""));
+
+        return String(b.updatedAt ?? "").localeCompare(
+          String(a.updatedAt ?? ""),
+        );
       });
 
       return ok(res, {
         list: { id: type.id, key: type.key, title: config.title, config },
-        lens,
+        lens: lens?.key ?? config.experience.list.defaultLens,
         counts,
-        sortedBy: lens === "followups" ? "follow_up_date" : origin ? "distance" : "priority",
+        sortedBy: config.experience.list.sort,
         items: picked.slice(0, limit),
         total: picked.length,
       });

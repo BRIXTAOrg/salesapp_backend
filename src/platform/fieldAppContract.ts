@@ -1,5 +1,5 @@
 /*
- * BRIXTA_FIELD_APP_CONTRACT_V2
+ * BRIXTA_FIELD_APP_CONTRACT_V3
  *
  * The one definition of a field app: which inputs exist, how a config is
  * cleaned, what makes it publishable, how answers are validated, when a
@@ -18,7 +18,7 @@
  *   fieldAppHistory  last published versions, newest first
  */
 
-export const FIELD_APP_CONTRACT_VERSION = 2;
+export const FIELD_APP_CONTRACT_VERSION = 3;
 
 /* ------------------------------------------------------------------ */
 /* Inputs                                                              */
@@ -142,6 +142,101 @@ export type FieldStage = {
   terminal: boolean;
 };
 
+
+/* ------------------------------------------------------------------ */
+/* Operational app experience                                         */
+/* ------------------------------------------------------------------ */
+
+/*
+ * BRIXTA_FIELD_APP_EXPERIENCE_V3
+ *
+ * The form/capture contract remains intact. This layer controls how the
+ * surrounding CRM module behaves in Flutter and how management summarizes it.
+ *
+ * No generated Dart. No second database. No second record engine.
+ */
+
+export type FieldLensKind =
+  | "mine"
+  | "todo"
+  | "active"
+  | "followups"
+  | "closed"
+  | "all"
+  | "stages"
+  | "field";
+
+export type FieldListLens = {
+  key: string;
+  label: string;
+  kind: FieldLensKind;
+  /** Used by kind=field. */
+  field: string | null;
+  /** Used by kind=field. */
+  values: string[];
+  /** Used by kind=stages; optional override for todo. */
+  stageKeys: string[];
+};
+
+export type FieldRecordScope =
+  | "all"
+  | "assigned_to_me";
+
+export type FieldSortMode =
+  | "smart"
+  | "distance"
+  | "priority"
+  | "updated"
+  | "follow_up";
+
+export type FieldBadgeToneRule = {
+  value: string;
+  tone: FieldStageTone;
+};
+
+export type FieldListExperience = {
+  recordScope: FieldRecordScope;
+  search: boolean;
+  defaultLens: string;
+  lenses: FieldListLens[];
+
+  /** Extra values rendered underneath the CRM record title. */
+  cardFields: string[];
+
+  /** Optional prominent classification such as Hot / Warm / Cold. */
+  badgeField: string | null;
+  badgeToneRules: FieldBadgeToneRule[];
+
+  showDistance: boolean;
+  showAssignee: boolean;
+  showFollowUp: boolean;
+  showLastActivity: boolean;
+
+  sort: FieldSortMode;
+};
+
+export type FieldDetailExperience = {
+  showMap: boolean;
+  showNavigate: boolean;
+  showCopyLink: boolean;
+  showImportedInfo: boolean;
+  showTimeline: boolean;
+};
+
+export type FieldManagementExperience = {
+  /**
+   * Lens cards management sees at the top of Data input.
+   * Example: hot, warm, cold, followups.
+   */
+  summaryLensKeys: string[];
+};
+
+export type FieldExperience = {
+  list: FieldListExperience;
+  detail: FieldDetailExperience;
+  management: FieldManagementExperience;
+};
+
 export type FieldAppConfig = {
   enabled: boolean;
   template: string | null;
@@ -152,6 +247,7 @@ export type FieldAppConfig = {
   locationField: string | null;
   followUpField: string | null;
   tableFields: string[];
+  experience: FieldExperience;
   stages: FieldStage[];
   sections: FieldSection[];
   /** set when published */
@@ -195,6 +291,77 @@ export const DEFAULT_STAGES: FieldStage[] = [
   { key: "lost", label: "Lost", tone: "danger", closed: true, terminal: false },
   { key: "not_a_site", label: "Not a site", tone: "neutral", closed: true, terminal: false },
 ];
+
+
+export const DEFAULT_FIELD_LENSES: FieldListLens[] = [
+  {
+    key: "mine",
+    label: "Mine",
+    kind: "mine",
+    field: null,
+    values: [],
+    stageKeys: [],
+  },
+  {
+    key: "todo",
+    label: "To visit",
+    kind: "todo",
+    field: null,
+    values: [],
+    stageKeys: ["new", "visited"],
+  },
+  {
+    key: "active",
+    label: "In progress",
+    kind: "active",
+    field: null,
+    values: [],
+    stageKeys: [],
+  },
+  {
+    key: "followups",
+    label: "Follow-ups",
+    kind: "followups",
+    field: null,
+    values: [],
+    stageKeys: [],
+  },
+  {
+    key: "closed",
+    label: "Closed",
+    kind: "closed",
+    field: null,
+    values: [],
+    stageKeys: [],
+  },
+];
+
+export const DEFAULT_FIELD_EXPERIENCE: FieldExperience = {
+  list: {
+    recordScope: "all",
+    search: true,
+    defaultLens: "mine",
+    lenses: DEFAULT_FIELD_LENSES,
+    cardFields: [],
+    badgeField: null,
+    badgeToneRules: [],
+    showDistance: true,
+    showAssignee: true,
+    showFollowUp: true,
+    showLastActivity: true,
+    sort: "smart",
+  },
+  detail: {
+    showMap: true,
+    showNavigate: true,
+    showCopyLink: true,
+    showImportedInfo: true,
+    showTimeline: true,
+  },
+  management: {
+    summaryLensKeys: ["todo", "active", "followups", "closed"],
+  },
+};
 
 /* ------------------------------------------------------------------ */
 /* Cleaning a config                                                    */
@@ -335,6 +502,162 @@ export function normalizeStage(raw: unknown): FieldStage | null {
   };
 }
 
+
+const LENS_KINDS: FieldLensKind[] = [
+  "mine",
+  "todo",
+  "active",
+  "followups",
+  "closed",
+  "all",
+  "stages",
+  "field",
+];
+
+const SORT_MODES: FieldSortMode[] = [
+  "smart",
+  "distance",
+  "priority",
+  "updated",
+  "follow_up",
+];
+
+function normalizeLens(raw: unknown): FieldListLens | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+
+  const item = raw as Record<string, unknown>;
+  const key = fieldKey(item.key);
+  if (!key) return null;
+
+  const kind: FieldLensKind =
+    LENS_KINDS.includes(item.kind as FieldLensKind)
+      ? (item.kind as FieldLensKind)
+      : "all";
+
+  return {
+    key,
+    label: text(item.label) || key,
+    kind,
+    field: fieldKey(item.field),
+    values: list(
+      item.values,
+      (value) => text(String(value ?? ""), 120) || null,
+      30,
+    ),
+    stageKeys: list(item.stageKeys, fieldKey, 30),
+  };
+}
+
+function normalizeBadgeToneRule(raw: unknown): FieldBadgeToneRule | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const item = raw as Record<string, unknown>;
+  const value = text(item.value, 120);
+  if (!value) return null;
+  return {
+    value,
+    tone: TONES.includes(item.tone as FieldStageTone)
+      ? (item.tone as FieldStageTone)
+      : "neutral",
+  };
+}
+
+export function normalizeFieldExperience(raw: unknown): FieldExperience {
+  const source =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? (raw as Record<string, unknown>)
+      : {};
+
+  const listRaw =
+    source.list && typeof source.list === "object" && !Array.isArray(source.list)
+      ? (source.list as Record<string, unknown>)
+      : {};
+
+  const detailRaw =
+    source.detail && typeof source.detail === "object" && !Array.isArray(source.detail)
+      ? (source.detail as Record<string, unknown>)
+      : {};
+
+  const managementRaw =
+    source.management &&
+    typeof source.management === "object" &&
+    !Array.isArray(source.management)
+      ? (source.management as Record<string, unknown>)
+      : {};
+
+  const seen = new Set<string>();
+  let lenses = list(listRaw.lenses, normalizeLens, 20).filter((lens) => {
+    if (seen.has(lens.key)) return false;
+    seen.add(lens.key);
+    return true;
+  });
+
+  if (lenses.length === 0) {
+    lenses = DEFAULT_FIELD_LENSES.map((lens) => ({
+      ...lens,
+      values: [...lens.values],
+      stageKeys: [...lens.stageKeys],
+    }));
+  }
+
+  const requestedDefault = fieldKey(listRaw.defaultLens);
+  const defaultLens =
+    requestedDefault && lenses.some((lens) => lens.key === requestedDefault)
+      ? requestedDefault
+      : lenses[0].key;
+
+  const requestedSummary = list(
+    managementRaw.summaryLensKeys,
+    fieldKey,
+    12,
+  ).filter((key) => lenses.some((lens) => lens.key === key));
+
+  const fallbackSummary = lenses
+    .filter((lens) => lens.kind !== "mine" && lens.kind !== "all")
+    .slice(0, 6)
+    .map((lens) => lens.key);
+
+  return {
+    list: {
+      recordScope:
+        listRaw.recordScope === "assigned_to_me"
+          ? "assigned_to_me"
+          : "all",
+      search: listRaw.search !== false,
+      defaultLens,
+      lenses,
+      cardFields: list(listRaw.cardFields, fieldKey, 4),
+      badgeField: fieldKey(listRaw.badgeField),
+      badgeToneRules: list(
+        listRaw.badgeToneRules,
+        normalizeBadgeToneRule,
+        20,
+      ),
+      showDistance: listRaw.showDistance !== false,
+      showAssignee: listRaw.showAssignee !== false,
+      showFollowUp: listRaw.showFollowUp !== false,
+      showLastActivity: listRaw.showLastActivity !== false,
+      sort: SORT_MODES.includes(listRaw.sort as FieldSortMode)
+        ? (listRaw.sort as FieldSortMode)
+        : "smart",
+    },
+
+    detail: {
+      showMap: detailRaw.showMap !== false,
+      showNavigate: detailRaw.showNavigate !== false,
+      showCopyLink: detailRaw.showCopyLink !== false,
+      showImportedInfo: detailRaw.showImportedInfo !== false,
+      showTimeline: detailRaw.showTimeline !== false,
+    },
+
+    management: {
+      summaryLensKeys:
+        requestedSummary.length > 0
+          ? requestedSummary
+          : fallbackSummary,
+    },
+  };
+}
+
 /**
  * Cleans any stored or submitted config. Never throws, never returns null:
  * drafts can be half-finished. Use checkFieldApp() before publishing.
@@ -372,6 +695,7 @@ export function normalizeFieldApp(raw: unknown, entityTitle: string): FieldAppCo
     locationField: fieldKey(config.locationField),
     followUpField: fieldKey(config.followUpField),
     tableFields: list(config.tableFields, fieldKey, 6),
+    experience: normalizeFieldExperience(config.experience),
     stages,
     sections,
     version: clampInt(config.version, 0, 1_000_000, 0),
@@ -1043,6 +1367,84 @@ export function stageOf(config: Pick<FieldAppConfig, "stages">, stageKey: string
     config.stages.find((stage) => stage.key === "new") ??
     DEFAULT_STAGES[0]
   );
+}
+
+
+/** Whether this record belongs in the employee's overall module scope. */
+export function inFieldRecordScope(
+  config: Pick<FieldAppConfig, "experience" | "stages">,
+  state: Pick<FieldState, "stage" | "assignee">,
+  viewerId: number | null,
+): boolean {
+  const scope = config.experience.list.recordScope;
+  if (scope === "all") return true;
+  if (viewerId === null) return true;
+  return state.assignee?.userId === viewerId;
+}
+
+/**
+ * Pure lens matching shared by mobile backend and CMS.
+ * Custom lenses can classify by stages or by any CRM/captured field.
+ */
+export function matchesFieldLens(
+  config: Pick<FieldAppConfig, "stages">,
+  lens: FieldListLens,
+  state: Pick<FieldState, "stage" | "followUpAt" | "assignee">,
+  data: Record<string, unknown>,
+  viewerId: number | null,
+): boolean {
+  const stage = stageOf(config, state.stage);
+
+  switch (lens.kind) {
+    case "all":
+      return true;
+
+    case "mine":
+      return (
+        !stage.closed &&
+        viewerId !== null &&
+        state.assignee?.userId === viewerId
+      );
+
+    case "closed":
+      return stage.closed;
+
+    case "followups":
+      return (
+        !stage.closed &&
+        (
+          stage.key === "follow_up" ||
+          Boolean(state.followUpAt)
+        )
+      );
+
+    case "todo": {
+      if (stage.closed) return false;
+      const keys = lens.stageKeys.length
+        ? lens.stageKeys
+        : ["new", "visited"];
+      return keys.includes(stage.key);
+    }
+
+    case "active": {
+      if (stage.closed) return false;
+      const todo = new Set(["new", "visited"]);
+      return !todo.has(stage.key);
+    }
+
+    case "stages":
+      return lens.stageKeys.includes(stage.key);
+
+    case "field": {
+      if (!lens.field || lens.values.length === 0) return false;
+      const wanted = new Set(
+        lens.values.map((value) => value.trim().toLowerCase()),
+      );
+      return answerTokens(data[lens.field])
+        .map((value) => value.trim().toLowerCase())
+        .some((value) => wanted.has(value));
+    }
+  }
 }
 
 /**
