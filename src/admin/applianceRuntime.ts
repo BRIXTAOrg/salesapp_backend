@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { previewFieldPixelLogic } from "../platform/fieldPixelPreview";
 
 import type {
   Router,
@@ -36,6 +37,7 @@ import {
   entityRecords,
   entityTypes,
   recordLinks,
+  platformAuditEvents,
 } from "../db/platformVNextSchema";
 
 import {
@@ -91,6 +93,37 @@ function objectValue(
 export function registerRuntimeAdminRoutes(
   router: Router,
 ) {
+  // BRIXTA_FIELD_PIXEL_PREVIEW_V1: synthetic dry-run. Authenticated via
+  // requireAdminService, and CMS appliance proxy enforces dashboard WRITE.
+  // Never writes through the tenant DB or invokes a Field effect host.
+  router.post("/field-pixel-preview", (req: AdminRequest, res) => {
+    if (!req.adminActor?.userId) {
+      return res.status(403).json({ success: false, error: "Dashboard administrator required." });
+    }
+    const body = req.body ?? {};
+    if (JSON.stringify(body).length > 64000) {
+      return res.status(413).json({ success: false, error: "Preview request is too large." });
+    }
+    const asObject = (value: unknown): Record<string, unknown> =>
+      value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+    const rawSample = asObject(body.sample);
+    const rawCapture = asObject(rawSample.capture);
+    if (Object.keys(rawCapture).length > 100) {
+      return res.status(400).json({ success: false, error: "Too many sample fields." });
+    }
+    const stages = Array.isArray(body.stages) ? body.stages.slice(0, 40).map((item: unknown) => ({
+      key: String(asObject(item).key ?? "").slice(0, 120),
+    })) : [];
+    const preview = previewFieldPixelLogic({
+      rawProgram: body.program,
+      stages,
+      capture: rawCapture,
+      sectionKey: String(rawSample.sectionKey ?? "visit").slice(0, 120),
+      currentStage: String(rawSample.stage ?? stages[0]?.key ?? "new").slice(0, 120),
+    });
+    return res.status(preview.ok ? 200 : 422).json({ success: preview.ok, ...preview });
+  });
+
   /*
    * BRIXTA_RECORD_ASSIGNMENT_V1
    *
@@ -806,6 +839,32 @@ export function registerRuntimeAdminRoutes(
           });
         }
 
+        // BRIXTA_LINKED_RESPONSIBILITY_AUDIT_V1
+        // The canonical CRM record is unchanged. Work items, Responsibility
+        // records and record_links were created above; this creates a
+        // traceable event in the SAME tenant DB transaction.
+        if (created.length > 0) {
+          await db.insert(platformAuditEvents).values(
+            created.map((item) => ({
+              actorUserId,
+              eventType: "field.responsibility_started",
+              subjectType: "entity_record",
+              subjectId: item.sourceRecordId,
+              payload: {
+                title: `Responsibility started: ${responsibility.title}`,
+                responsibilityKey: responsibility.key,
+                responsibilityTitle: responsibility.title,
+                responsibilityRecordId: item.recordId,
+                workItemId: item.workItemId,
+                assigneeUserId: assignee.id,
+                assigneeName: assignee.name ?? assignee.username ?? `Employee ${assignee.id}`,
+                byName: String(req.adminActor?.username ?? "Dashboard administrator"),
+                sourceEntityTypeKey: entityType.key,
+              },
+            })),
+          );
+        }
+
         return res
           .status(201)
           .json({
@@ -838,6 +897,185 @@ export function registerRuntimeAdminRoutes(
           });
       },
     ),
+  );
+
+  // BRIXTA_LINKED_RESPONSIBILITY_HANDOVER_V1
+  // Reassign ownership of an EXISTING linked Responsibility. All writes occur
+  // under withAdminTenantDb's single tenant transaction, no cloned records.
+  router.post(
+    "/work-items/:workItemId/handover",
+    withAdminTenantDb<AdminRequest>(async (req, res, db) => {
+      const actorUserId = req.adminActor?.userId ?? null;
+      if (!actorUserId) {
+        return res.status(403).json({ success: false, error: "An identified administrator is required." });
+      }
+
+      const workItemId = String(req.params.workItemId ?? "").trim();
+      const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const nextUserId = Number(req.body?.newAssigneeUserId);
+      const expectedUserId = Number(req.body?.expectedAssigneeUserId);
+      const reason = String(req.body?.reason ?? "").trim();
+      if (!uuidPattern.test(workItemId) || !Number.isSafeInteger(nextUserId) || nextUserId <= 0 ||
+          !Number.isSafeInteger(expectedUserId) || expectedUserId <= 0 ||
+          reason.length < 5 || reason.length > 300) {
+        return res.status(400).json({
+          success: false,
+          error: "Valid work item, current/new assignees and a 5–300 character handover reason are required.",
+        });
+      }
+      if (nextUserId === expectedUserId) {
+        return res.status(409).json({ success: false, error: "Select a different employee." });
+      }
+
+      // Serialize concurrent handovers of the same work item.
+      await db.execute(sql`SELECT id FROM work_items WHERE id = ${workItemId}::uuid FOR UPDATE`);
+      const [work] = await db.select().from(workItems)
+        .where(eq(workItems.id, workItemId)).limit(1);
+      if (!work) return res.status(404).json({ success: false, error: "Work item not found." });
+      const workPayload = objectValue(work.payload);
+      const sourceRecordId = String(workPayload.sourceRecordId ?? "");
+      const submissionRecordId = String(workPayload.recordId ?? "");
+      if (workPayload.kind !== "record_assignment" || !uuidPattern.test(sourceRecordId) ||
+          !uuidPattern.test(submissionRecordId)) {
+        return res.status(409).json({ success: false, error: "Only linked CRM Responsibilities support handover." });
+      }
+      if (work.assigneeUserId !== expectedUserId) {
+        return res.status(409).json({
+          success: false, code: "ASSIGNEE_CHANGED",
+          error: "The assignee changed since this page was opened. Refresh before handing over.",
+        });
+      }
+      if (!(["assigned", "in_progress"] as string[]).includes(work.status) ||
+          work.completedAt || work.cancelledAt) {
+        return res.status(409).json({ success: false, error: "Completed or cancelled work cannot be transferred." });
+      }
+
+      const [newOwner] = await db.select({
+        id: users.id, name: users.displayName, username: users.username,
+        status: users.status, mobileAccess: users.isSalesAppUser,
+      }).from(users).where(eq(users.id, nextUserId)).limit(1);
+      if (!newOwner || newOwner.status !== "active" || newOwner.mobileAccess !== true) {
+        return res.status(404).json({ success: false, error: "Select an active employee with mobile access." });
+      }
+
+      // A handover is not another work assignment; never create duplicate
+      // active work for the same Responsibility, employee and source record.
+      if (work.capabilityId !== null) {
+        const [collision] = await db.select({ id: workItems.id }).from(workItems).where(and(
+          eq(workItems.capabilityId, work.capabilityId),
+          eq(workItems.assigneeUserId, nextUserId),
+          inArray(workItems.status, ["assigned", "in_progress"]),
+          sql`${workItems.payload}->>'sourceRecordId' = ${sourceRecordId}`,
+          ne(workItems.id, workItemId),
+        )).limit(1);
+        if (collision) {
+          return res.status(409).json({ success: false, error: "This employee already has active work for the same Responsibility and CRM record." });
+        }
+      }
+
+      const [submission] = await db.select().from(dynamicSubmissions).where(and(
+        eq(dynamicSubmissions.id, submissionRecordId),
+        eq(dynamicSubmissions.workItemId, workItemId),
+      )).limit(1);
+      if (!submission || submission.status === "deleted" || submission.userId !== expectedUserId) {
+        return res.status(409).json({ success: false, error: "The linked Responsibility record changed or is unavailable. Refresh." });
+      }
+      const [link] = await db.select().from(recordLinks).where(and(
+        eq(recordLinks.fromRecordId, sourceRecordId),
+        eq(recordLinks.targetRecordId, submissionRecordId),
+        eq(recordLinks.relationKey, "responsibility_record"),
+      )).limit(1);
+      if (!link || objectValue(link.metadata).workItemId !== workItemId) {
+        return res.status(409).json({ success: false, error: "The original CRM record link is missing or inconsistent." });
+      }
+      const originalPayload = objectValue(submission.payload);
+      const originalAssignment = objectValue(originalPayload.__assignment);
+      const time = new Date();
+      const at = time.toISOString();
+      const nextAssignment = {
+        ...originalAssignment,
+        assigneeUserId: nextUserId,
+        previousAssigneeUserId: expectedUserId,
+        reassignedByUserId: actorUserId,
+        reassignedAt: at,
+        handoverReason: reason,
+      };
+
+      // Optimistic concurrency protects employee edits made since read.
+      // On mismatch we return BEFORE changing any work/link or emitting audit.
+      const [updatedSubmission] = await db.update(dynamicSubmissions).set({
+        userId: nextUserId,
+        payload: { ...originalPayload, __assignment: nextAssignment },
+        serverVersion: sql`${dynamicSubmissions.serverVersion} + 1`,
+        updatedAt: time,
+      }).where(and(
+        eq(dynamicSubmissions.id, submission.id),
+        eq(dynamicSubmissions.workItemId, workItemId),
+        eq(dynamicSubmissions.userId, expectedUserId),
+        eq(dynamicSubmissions.serverVersion, submission.serverVersion),
+      )).returning();
+      if (!updatedSubmission) {
+        return res.status(409).json({
+          success: false, code: "RECORD_VERSION_CONFLICT",
+          error: "Employee progress changed during handover. Refresh and try again.",
+        });
+      }
+
+      await db.update(workItems).set({
+        assigneeUserId: nextUserId,
+        payload: {
+          ...workPayload,
+          previousAssigneeUserId: expectedUserId,
+          reassignedByUserId: actorUserId,
+          reassignedAt: at,
+          handoverCount: Number(workPayload.handoverCount ?? 0) + 1,
+        },
+        updatedAt: time,
+      }).where(eq(workItems.id, workItemId));
+      await db.update(recordLinks).set({
+        metadata: {
+          ...objectValue(link.metadata),
+          assigneeUserId: nextUserId,
+          previousAssigneeUserId: expectedUserId,
+          reassignedByUserId: actorUserId,
+          reassignedAt: at,
+        },
+      }).where(eq(recordLinks.id, link.id));
+
+      await db.insert(applianceAuditLog).values({
+        actorUserId, actorType: "admin", action: "responsibility.handover",
+        entityType: "work_item", entityId: workItemId,
+        beforeState: { assigneeUserId: expectedUserId, recordId: submission.id, serverVersion: submission.serverVersion },
+        afterState: { assigneeUserId: nextUserId, recordId: submission.id, serverVersion: updatedSubmission.serverVersion },
+        metadata: { reason, sourceRecordId, responsibilityKey: String(workPayload.responsibilityKey ?? ""), at },
+      });
+      await db.insert(platformAuditEvents).values({
+        actorUserId,
+        eventType: "field.responsibility_handed_over",
+        subjectType: "entity_record", subjectId: sourceRecordId,
+        payload: {
+          title: "Responsibility handed over",
+          responsibilityKey: String(workPayload.responsibilityKey ?? ""),
+          workItemId,
+          responsibilityRecordId: submission.id,
+          previousAssigneeUserId: expectedUserId,
+          assigneeUserId: nextUserId,
+          assigneeName: newOwner.name ?? newOwner.username ?? `Employee ${nextUserId}`,
+          reason,
+          byName: req.adminActor?.username ?? "Dashboard administrator",
+        },
+      });
+
+      return res.json({
+        success: true,
+        workItemId,
+        recordId: submission.id,
+        previousAssigneeUserId: expectedUserId,
+        assigneeUserId: nextUserId,
+        serverVersion: updatedSubmission.serverVersion,
+        status: work.status,
+      });
+    }),
   );
 
   router.get(

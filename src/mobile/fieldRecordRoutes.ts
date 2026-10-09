@@ -53,6 +53,10 @@ import {
 import {
   userIdFrom,
 } from "./http";
+import { runPixelLogic } from "../platform/pixelLogic/runtime";
+import { validateFieldPixelLogic } from "../platform/fieldPixelLogic";
+import { startFieldResponsibilityWork } from "../platform/fieldResponsibilityAutomation";
+import { fieldSubmissionConflict, readFieldProgressEpoch } from "../platform/fieldSyncGeneration";
 
 /*
  * BRIXTA_FIELD_APP_V1 — field work on imported lists.
@@ -262,6 +266,8 @@ function recordDetail(
   return {
     ...summaryOf(config, { ...record, data }, null, viewerId),
     sections: state.sections,
+    // BRIXTA_FIELD_SYNC_GENERATION_V1
+    progressEpoch: readFieldProgressEpoch(data.__field),
     values,
     info,
   };
@@ -602,6 +608,21 @@ export function registerFieldRecordRoutes(app: Express) {
       if (!loaded) return fail(res, 404, "This record is not available in the field app.", "FIELD_RECORD_NOT_FOUND");
       const { record, type, config } = loaded;
 
+      // BRIXTA_FIELD_SYNC_GENERATION_V1 — check before section lookup. An
+      // offline request for a step removed by a newer app must return 409,
+      // not a 404 that would discard queued answers and local photo files.
+      const progressEpoch = readFieldProgressEpoch((record.data as Record<string, unknown>).__field);
+      const conflict = fieldSubmissionConflict({
+        appVersion: config.version,
+        clientAppVersion: req.body?.appVersion,
+        progressEpoch,
+        clientProgressEpoch: req.body?.progressEpoch,
+      });
+      if (conflict) return fail(res, 409, conflict.error, conflict.code, {
+        currentAppVersion: config.version,
+        currentProgressEpoch: progressEpoch,
+      });
+
       const section = config.sections.find((item) => item.key === String(req.params.section));
       if (!section) return fail(res, 404, "This step does not exist.", "FIELD_SECTION_NOT_FOUND");
 
@@ -652,7 +673,58 @@ export function registerFieldRecordRoutes(app: Express) {
       const stageFrom = state.stage;
       const ruleValues: Record<string, unknown> = {};
       for (const field of section.fields) ruleValues[field.key] = data[field.key];
-      const stageTo = nextStage(config, stageFrom, section, ruleValues);
+      let stageTo = nextStage(config, stageFrom, section, ruleValues);
+
+      // BRIXTA_FIELD_PIXEL_LOGIC_V1: deterministic server-side evaluation.
+      // Only THIS record's stage and history are mutable. No external effects.
+      // BRIXTA_FIELD_PIXEL_WORK_TRIGGER_V1
+      const pixelTriggers: Array<{ nodeId: string; responsibilityKey: string }> = [];
+      const pixelHistory: Array<{ label: string; nodeId: string }> = [];
+      const program = config.pixelLogic;
+      if (program?.enabled && program.nodes.length) {
+        const errors = validateFieldPixelLogic(program, config.stages);
+        if (errors.length) {
+          return fail(res, 409, errors[0], "FIELD_PIXEL_LOGIC_INVALID");
+        }
+        try {
+          const result = runPixelLogic(program, {
+            event: {
+              name: "record.updated",
+              payload: { recordId: record.id, sectionKey: section.key },
+              at: nowIso,
+            },
+            values: {
+              capture: data,
+              context: { sectionKey: section.key },
+              state: { stage: stageTo },
+            },
+          });
+          for (const effect of result.effects) {
+            if (effect.kind === "change_state") {
+              const next = String(effect.value ?? "");
+              if (!config.stages.some((stage) => stage.key === next)) {
+                throw new Error("Pixel Logic selected a stage that is not published.");
+              }
+              stageTo = next;
+            } else if (effect.kind === "trigger_responsibility") {
+              pixelTriggers.push({
+                nodeId: effect.nodeId,
+                responsibilityKey: String(effect.targetKey ?? ""),
+              });
+            } else if (effect.kind === "append_history") {
+              pixelHistory.push({
+                label: String(effect.value ?? "").slice(0, 160),
+                nodeId: effect.nodeId,
+              });
+            } else {
+              throw new Error(`Unsupported Field App Pixel effect: ${effect.kind}`);
+            }
+          }
+        } catch (error) {
+          console.error("Field Pixel Logic execution failed", error);
+          return fail(res, 409, "Published Field Pixel Logic could not execute. Ask your administrator to review its rule.", "FIELD_PIXEL_LOGIC_FAILED");
+        }
+      }
 
       const followUpAt =
         config.followUpField && Object.prototype.hasOwnProperty.call(cleaned.values, config.followUpField)
@@ -680,6 +752,34 @@ export function registerFieldRecordRoutes(app: Express) {
       };
       data.__field = { ...previousField, ...nextField };
 
+      if (pixelTriggers.length) {
+        // No ability to mint work for someone else's record through an
+        // arbitrary mobile session. Assigned records require that employee.
+        if (!state.assignee || state.assignee.userId !== user.id) {
+          return fail(res, 403, "Assign this CRM record to the submitting employee before triggering automated work.", "FIELD_AUTOMATION_ASSIGNEE_MISMATCH");
+        }
+        const seenKeys = new Set<string>();
+        for (const trigger of pixelTriggers) {
+          if (seenKeys.has(trigger.responsibilityKey)) continue;
+          seenKeys.add(trigger.responsibilityKey);
+          // Any host failure throws, rolling back the field update, work,
+          // links, and audit events together in withTenantDb's transaction.
+          await startFieldResponsibilityWork(db, {
+            entityTypeId: type.id,
+            entityTypeKey: type.key,
+            recordId: record.id,
+            recordData: data,
+            label: (config.titleField ? displayValue(data[config.titleField]) : "") || record.externalKey || "CRM record",
+            employeeId: user.id,
+            nodeId: trigger.nodeId,
+            responsibilityKey: trigger.responsibilityKey,
+            sectionKey: section.key,
+            appVersion: config.version,
+            clientMutationId: MUTATION_ID.test(mutationId) ? mutationId : null,
+          });
+        }
+      }
+
       const [updated] = await db
         .update(entityRecords)
         .set({ data, updatedAt: now, updatedByUserId: user.id })
@@ -702,8 +802,28 @@ export function registerFieldRecordRoutes(app: Express) {
           changes: changes.slice(0, 20),
           byName: user.name,
           clientMutationId: MUTATION_ID.test(mutationId) ? mutationId : null,
+          pixelLogicVersion: program?.enabled ? config.version : null,
         },
       });
+
+      if (pixelHistory.length) {
+        await db.insert(platformAuditEvents).values(
+          pixelHistory.map((effect) => ({
+            actorUserId: user.id,
+            eventType: "field.pixel_history",
+            subjectType: "entity_record",
+            subjectId: record.id,
+            payload: {
+              title: effect.label,
+              nodeId: effect.nodeId,
+              appVersion: config.version,
+              section: section.key,
+              clientMutationId: MUTATION_ID.test(mutationId) ? mutationId : null,
+              byName: user.name,
+            },
+          })),
+        );
+      }
 
       return ok(res, {
         record: recordDetail(config, type, updated ?? { ...record, data }, user.id),
