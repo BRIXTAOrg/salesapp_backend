@@ -1,3 +1,4 @@
+// BRIXTA_SITE_ADMIN_V5
 import type {
   Express,
   Response,
@@ -124,8 +125,11 @@ async function fieldLists(db: AppDatabase) {
 }
 
 function titleOf(config: FieldAppConfig, data: Record<string, unknown>, externalKey: string | null) {
+  const field = data.__field && typeof data.__field === "object" && !Array.isArray(data.__field)
+    ? data.__field as Record<string,unknown> : {};
+  const custom = typeof field.siteName === "string" ? field.siteName.trim() : "";
   const fromField = config.titleField ? displayValue(data[config.titleField]) : "";
-  return fromField || externalKey || "Untitled";
+  return custom || fromField || externalKey || "Untitled";
 }
 
 function subtitleOf(config: FieldAppConfig, data: Record<string, unknown>) {
@@ -183,6 +187,9 @@ function summaryOf(
     id: row.id,
     key: row.externalKey,
     title: titleOf(config, row.data, row.externalKey),
+    siteName: row.data.__field && typeof row.data.__field === "object" && !Array.isArray(row.data.__field) &&
+      typeof (row.data.__field as Record<string,unknown>).siteName === "string"
+      ? String((row.data.__field as Record<string,unknown>).siteName) : null,
     subtitle: subtitleOf(config, row.data),
     badge: badgeValue
       ? { value: badgeValue, tone: badgeRule?.tone ?? "neutral" }
@@ -595,6 +602,55 @@ export function registerFieldRecordRoutes(app: Express) {
     }),
   );
 
+  // BRIXTA_SITE_ADMIN_V5: field employees may name a verified site; the immutable
+  // CRM ID and previously collected answers never change. Entire operation audited.
+  app.post(
+    "/api/salesApp/field/records/:id/name",
+    authenticateToken,
+    withTenantDb<AuthRequest>(async (req,res,db) => {
+      const userId = userIdFrom(req);
+      if (!userId) return fail(res,401,"Unauthenticated.");
+      const user = await fieldUser(db,userId);
+      if (!user) return fail(res,403,"Mobile access is disabled for this employee.","FIELD_USER_INACTIVE");
+      const loaded = await loadRecord(db,String(req.params.id),true);
+      if (!loaded) return fail(res,404,"CRM site not found.","FIELD_RECORD_NOT_FOUND");
+      const {record,type,config}=loaded;
+      const data = {...(record.data ?? {}) as Record<string,unknown>};
+      const state = readFieldState(data);
+      if (!inFieldRecordScope(config,state,userId)) {
+        return fail(res,403,"This site is outside your assigned Field scope.","FIELD_SCOPE_MISMATCH");
+      }
+      if (state.assignee && state.assignee.userId !== userId) {
+        return fail(res,403,"This site is assigned to another employee.","FIELD_ASSIGNEE_MISMATCH");
+      }
+      const verified = config.sections.some(section =>
+        (/^(verify|verification)(_|$)/i.test(section.key) || /^verify\b/i.test(section.title)) &&
+        Boolean(state.sections[section.key]?.completedAt));
+      const historicVerified = Object.entries(state.sections).some(([key,section]) =>
+        /^(verify|verification)(_|$)/i.test(key) && Boolean(section?.completedAt));
+      if (!verified && !historicVerified && state.stage !== "verified") return fail(res,409,"Verify this site before giving it a name.","FIELD_NOT_VERIFIED");
+      if (typeof req.body?.siteName !== "string" || !req.body.siteName.trim() ||
+          req.body.siteName.trim().length > 100 || /[\u0000-\u001f]/.test(req.body.siteName)) {
+        return fail(res,422,"Enter a name from 1 to 100 characters.","FIELD_INVALID_SITE_NAME");
+      }
+      const meta=data.__field && typeof data.__field==="object" && !Array.isArray(data.__field)
+        ? data.__field as Record<string,unknown> : {};
+      const previous=typeof meta.siteName==="string"?meta.siteName:"";
+      const siteName=req.body.siteName.trim();
+      if (siteName===previous) return ok(res,{unchanged:true,siteName});
+      data.__field={...meta,siteName};
+      const now=new Date();
+      await db.update(entityRecords).set({data,updatedAt:now,updatedByUserId:userId})
+        .where(eq(entityRecords.id,record.id));
+      await db.insert(platformAuditEvents).values({actorUserId:userId,
+        eventType:"field.site_named",subjectType:"entity_record",subjectId:record.id,
+        payload:{title:"Employee named verified site",siteName,previousName:previous,
+          changes:[{label:"Site display name",from:previous,to:siteName}],byName:user.name,
+          at:now.toISOString(),appVersion:config.version}});
+      return ok(res,{siteName,updatedAt:now.toISOString(),id:record.id});
+    }),
+  );
+
   app.post(
     "/api/salesApp/field/records/:id/sections/:section",
     authenticateToken,
@@ -668,6 +724,18 @@ export function registerFieldRecordRoutes(app: Express) {
         changes.push({ field: field.key, label: field.label, from: show(before), to: show(after) });
       }
 
+      // BRIXTA_SITE_ADMIN_V5: Verify step and its name share one offline-safe save.
+      const sectionIsVerify = /^(verify|verification)(_|$)/i.test(section.key) ||
+        /^verify\b/i.test(section.title);
+      let verifiedName: string | null = null;
+      if (req.body?.siteName !== undefined && req.body.siteName !== null) {
+        if (!sectionIsVerify) return fail(res,422,"Only the Verify step may save a site name.","FIELD_NAME_NOT_VERIFY");
+        if (typeof req.body.siteName !== "string" || !req.body.siteName.trim() ||
+          req.body.siteName.trim().length > 100 || /[\u0000-\u001f]/.test(req.body.siteName)) {
+          return fail(res,422,"Site name must be 1–100 characters.","FIELD_NAME_INVALID");
+        }
+        verifiedName = req.body.siteName.trim();
+      }
       Object.assign(data, cleaned.values);
 
       const stageFrom = state.stage;
@@ -750,7 +818,12 @@ export function registerFieldRecordRoutes(app: Express) {
           ? [...state.mutations, mutationId].slice(-50)
           : state.mutations,
       };
-      data.__field = { ...previousField, ...nextField };
+      if (verifiedName !== null && verifiedName !== (previousField.siteName ?? "")) {
+        changes.push({field:"siteName",label:"Site display name",
+          from:String(previousField.siteName ?? ""),to:verifiedName});
+      }
+      data.__field = { ...previousField, ...nextField,
+        ...(verifiedName !== null ? {siteName:verifiedName} : {}) };
 
       if (pixelTriggers.length) {
         // No ability to mint work for someone else's record through an
