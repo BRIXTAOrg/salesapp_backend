@@ -254,6 +254,11 @@ export type JourneyRules = {
   homeGreetingStyle: "time_of_day" | "hello";
   workTasksEnabled: boolean;
   workTasksTitle: string;
+  /** CMS-published Home hero appearance. Snapshot onto each PJP. */
+  homeHeroStyle: "aurora" | "ink" | "minimal";
+  homeHeroEyebrow: string;
+  homeHeroSubline: string;
+  homeShowNextStop: boolean;
 };
 
 export const DEFAULT_JOURNEY_RULES: JourneyRules = {
@@ -269,6 +274,10 @@ export const DEFAULT_JOURNEY_RULES: JourneyRules = {
   homeGreetingStyle: "time_of_day",
   workTasksEnabled: true,
   workTasksTitle: "Your scheduled tasks",
+  homeHeroStyle: "aurora",
+  homeHeroEyebrow: "YOUR DAY, YOUR ROUTE",
+  homeHeroSubline: "A good day starts with a clear plan.",
+  homeShowNextStop: true,
 };
 
 export function normalizeJourneyRules(raw: unknown): JourneyRules {
@@ -293,6 +302,11 @@ export function normalizeJourneyRules(raw: unknown): JourneyRules {
     homeGreetingStyle: value.homeGreetingStyle === "hello" ? "hello" : "time_of_day",
     workTasksEnabled: value.workTasksEnabled !== false,
     workTasksTitle: short(value.workTasksTitle, 64, "Your scheduled tasks"),
+    homeHeroStyle: value.homeHeroStyle === "ink" || value.homeHeroStyle === "minimal"
+      ? value.homeHeroStyle : "aurora",
+    homeHeroEyebrow: short(value.homeHeroEyebrow, 45, "YOUR DAY, YOUR ROUTE"),
+    homeHeroSubline: short(value.homeHeroSubline, 110, "A good day starts with a clear plan."),
+    homeShowNextStop: value.homeShowNextStop !== false,
   };
 }
 
