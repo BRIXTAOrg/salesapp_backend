@@ -239,6 +239,63 @@ export type FieldExperience = {
   management: FieldManagementExperience;
 };
 
+/** Versioned, bounded PJP and Home configuration; not arbitrary executable code. */
+export type JourneyRules = {
+  enabled: boolean;
+  homeTitle: string;
+  taskLabel: string;
+  sortMode: "nearest" | "priority";
+  maxSiteStops: number;
+  radiusKm: number;
+  allowedStages: string[];
+  homeShowRouteButton: boolean;
+  /** Controls employee Home presentation and task inclusion in Work. */
+  homeGreetingEnabled: boolean;
+  homeGreetingStyle: "time_of_day" | "hello";
+  workTasksEnabled: boolean;
+  workTasksTitle: string;
+};
+
+export const DEFAULT_JOURNEY_RULES: JourneyRules = {
+  enabled: false,
+  homeTitle: "Today's journey",
+  taskLabel: "Tasks",
+  sortMode: "nearest",
+  maxSiteStops: 8,
+  radiusKm: 15,
+  allowedStages: [],
+  homeShowRouteButton: true,
+  homeGreetingEnabled: true,
+  homeGreetingStyle: "time_of_day",
+  workTasksEnabled: true,
+  workTasksTitle: "Your scheduled tasks",
+};
+
+export function normalizeJourneyRules(raw: unknown): JourneyRules {
+  const value = raw && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown> : {};
+  const short = (item: unknown, max: number, fallback: string) =>
+    typeof item === "string" && item.trim() ? item.trim().slice(0, max) : fallback;
+  const numeric = (item: unknown, max: number, fallback: number) =>
+    typeof item === "number" && Number.isInteger(item) && item >= 1 && item <= max ? item : fallback;
+  return {
+    enabled: value.enabled === true,
+    homeTitle: short(value.homeTitle, 80, "Today's journey"),
+    taskLabel: short(value.taskLabel, 40, "Tasks"),
+    sortMode: value.sortMode === "priority" ? "priority" : "nearest",
+    maxSiteStops: numeric(value.maxSiteStops, 20, 8),
+    radiusKm: numeric(value.radiusKm, 100, 15),
+    allowedStages: Array.isArray(value.allowedStages)
+      ? [...new Set(value.allowedStages.filter((x): x is string => typeof x === "string" && /^[a-z0-9_]{1,100}$/.test(x)))].slice(0, 30)
+      : [],
+    homeShowRouteButton: value.homeShowRouteButton !== false,
+    homeGreetingEnabled: value.homeGreetingEnabled !== false,
+    homeGreetingStyle: value.homeGreetingStyle === "hello" ? "hello" : "time_of_day",
+    workTasksEnabled: value.workTasksEnabled !== false,
+    workTasksTitle: short(value.workTasksTitle, 64, "Your scheduled tasks"),
+  };
+}
+
 export type FieldAppConfig = {
   enabled: boolean;
   template: string | null;
@@ -254,6 +311,8 @@ export type FieldAppConfig = {
   sections: FieldSection[];
   /** Versioned, server-executed Field App Pixel Logic (restricted effects). */
   pixelLogic?: PixelLogicProgram | null;
+  /** Published journey policy, edited with Pixel Logic. */
+  journeyRules?: JourneyRules;
   /** set when published */
   version: number;
   publishedAt: string | null;
@@ -705,6 +764,7 @@ export function normalizeFieldApp(raw: unknown, entityTitle: string): FieldAppCo
     pixelLogic: config.pixelLogic && typeof config.pixelLogic === "object" && !Array.isArray(config.pixelLogic)
       ? normalizePixelLogicProgram(config.pixelLogic, `${entityTitle} Field Pixel Logic`)
       : null,
+    journeyRules: normalizeJourneyRules(config.journeyRules),
     version: clampInt(config.version, 0, 1_000_000, 0),
     publishedAt: text(config.publishedAt, 40) || null,
     publishedBy: text(config.publishedBy, 120) || null,
@@ -862,6 +922,13 @@ export function checkFieldApp(config: FieldAppConfig): ConfigProblem[] {
     add("followUpField", "The follow-up date points at a question that doesn't exist.");
   }
 
+  if (config.journeyRules?.enabled) {
+    if (!config.locationField) add("journeyRules", "Enable a CRM location field before publishing journey rules.");
+    const knownStages = new Set(config.stages.map(s => s.key));
+    for (const stage of config.journeyRules.allowedStages) {
+      if (!knownStages.has(stage)) add("journeyRules.allowedStages", `Journey stage "${stage}" no longer exists.`);
+    }
+  }
   return problems;
 }
 

@@ -22,6 +22,8 @@ import {
   registerFieldRecordRoutes,
 } from "./fieldRecordRoutes";
 
+import { registerPjpRoutes } from "./pjpRoutes";
+
 import {
   registerLegacyRecordRoutes,
 } from "./legacyRecordRoutes";
@@ -59,4 +61,5 @@ export default function setupMobilePlatformRoutes(
   registerLegacyRecordRoutes(app);
   // BRIXTA_FIELD_APP_V1: imported lists worked in the field.
   registerFieldRecordRoutes(app);
+  registerPjpRoutes(app);
 }
