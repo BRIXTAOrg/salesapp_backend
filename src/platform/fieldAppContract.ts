@@ -1516,7 +1516,10 @@ export function matchesFieldLens(
   const verified = Object.entries(sectionMap).some(([key, value]) =>
     /^(verify|verification)(_|$)/i.test(key) && Boolean(value && typeof value === "object" &&
       (value as Record<string, unknown>).completedAt));
-  if (lens.key === "verified") return verified;
+  // BRIXTA_VERIFIED_LENS_STAGE_MATCH_20261102: legacy sites may have a verified
+  // workflow stage without a retained Verify-step completion timestamp.
+  // Do not forge timestamps; make the visible stage and Verified lens agree.
+  if (lens.key === "verified") return verified || state.stage === "verified";
   if (lens.key === "not_visited") {
     return state.stage === "new" && !fieldMeta.lastVisitAt && !verified;
   }

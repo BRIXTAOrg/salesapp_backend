@@ -69,9 +69,14 @@ export function registerPjpRoutes(app: Express) {
       .from(entityTypes).where(eq(entityTypes.id,Number(rawPlan.listId)||0)).limit(1);
     const isLinked=Boolean(moduleRow?.config?.fieldSource &&
       readFieldAppConfig(moduleRow.config,moduleRow.title));
-    const moduleEmployees = moduleRow?.config?.fieldModuleAccess as {employeeIds?:number[]} | undefined;
+    const moduleEmployees = moduleRow?.config?.fieldModuleAccess as {mode?:string;employeeIds?:number[]} | undefined;
     const linkedAllowed = Array.isArray(moduleEmployees?.employeeIds) && moduleEmployees.employeeIds.includes(userId);
-    const denied = isLinked ? !linkedAllowed : allowed !== null && !allowed.includes(Number(rawPlan.listId));
+    // BRIXTA_MAIN_EXPERIENCE_EMPLOYEE_ACCESS_V1_20261102: PJP must
+    // respect an explicit selected-only Main roster as well as linked grants.
+    const mainSelected = !isLinked && moduleEmployees?.mode === "selected";
+    const mainAllowed = Array.isArray(moduleEmployees?.employeeIds) && moduleEmployees.employeeIds.includes(userId);
+    const denied = isLinked ? !linkedAllowed : mainSelected ? !mainAllowed :
+      allowed !== null && !allowed.includes(Number(rawPlan.listId));
     const plan = !denied && Number(rawPlan.revision ?? 0) > 0 && rawPlan.cancelled !== true
       ? await planWithCurrentVerification(db,rawPlan) : null;
     return res.json({ success: true, plan });

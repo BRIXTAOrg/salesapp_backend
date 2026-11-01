@@ -123,6 +123,8 @@ type FieldAccess = {
   scheduledSites: Set<string>;
   linkedIds: Set<number>;
   grantedLinkedIds: Set<number>;
+  selectedMainIds: Set<number>;
+  grantedMainIds: Set<number>;
 };
 const isObj = (v: unknown): v is Record<string, unknown> =>
   Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -155,9 +157,25 @@ async function fieldAccessFor(db: AppDatabase, userId: number): Promise<FieldAcc
         Array.isArray(access.employeeIds) &&
         access.employeeIds.includes(userId);
     })()).map(t => t.id));
+  // BRIXTA_MAIN_EXPERIENCE_EMPLOYEE_ACCESS_V1_20261102
+  // Main is unchanged by default; an explicit selected-only roster overrides
+  // legacy per-employee listIds *for this Main experience only*.
+  const selectedMainIds = new Set(tenantTypes.filter(t => {
+    if (linkedIds.has(t.id)) return false;
+    const policy = t.config?.fieldModuleAccess;
+    return isObj(policy) && policy.mode === "selected";
+  }).map(t => t.id));
+  const grantedMainIds = new Set(tenantTypes.filter(t => {
+    if (!selectedMainIds.has(t.id)) return false;
+    const policy = t.config?.fieldModuleAccess;
+    return isObj(policy) && Array.isArray(policy.employeeIds) &&
+      policy.employeeIds.includes(userId);
+  }).map(t => t.id));
   return {
     linkedIds,
     grantedLinkedIds,
+    selectedMainIds,
+    grantedMainIds,
     listIds: Array.isArray(raw.listIds)
       ? raw.listIds.filter((id): id is number => Number.isSafeInteger(id) && id > 0) : null,
     recordScope: raw.recordScope === "assigned_only" || raw.recordScope === "all" ? raw.recordScope : "inherit",
@@ -171,6 +189,7 @@ function listAllowed(access: FieldAccess, listId: number) {
   // Existing unrestricted grants cover original datasets, never newly cloned modules.
   // Linked modules have independent explicit grants, never inherited dataset access.
   if (access.linkedIds.has(listId)) return access.grantedLinkedIds.has(listId);
+  if (access.selectedMainIds.has(listId)) return access.grantedMainIds.has(listId);
   return access.listIds === null || access.listIds.includes(listId);
 }
 function effectiveRecordScope(access: FieldAccess, config: FieldAppConfig) {
