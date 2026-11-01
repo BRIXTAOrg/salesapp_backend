@@ -65,7 +65,13 @@ export function registerPjpRoutes(app: Express) {
     const [policyRow] = await db.select().from(platformMeta).where(eq(platformMeta.key,policyKey)).limit(1);
     const policy = asObj(policyRow?.value);
     const allowed = Array.isArray(policy.listIds) ? policy.listIds : null;
-    const denied = allowed !== null && !allowed.includes(Number(rawPlan.listId));
+    const [moduleRow] = await db.select({config:entityTypes.config,title:entityTypes.title})
+      .from(entityTypes).where(eq(entityTypes.id,Number(rawPlan.listId)||0)).limit(1);
+    const isLinked=Boolean(moduleRow?.config?.fieldSource &&
+      readFieldAppConfig(moduleRow.config,moduleRow.title));
+    const moduleEmployees = moduleRow?.config?.fieldModuleAccess as {employeeIds?:number[]} | undefined;
+    const linkedAllowed = Array.isArray(moduleEmployees?.employeeIds) && moduleEmployees.employeeIds.includes(userId);
+    const denied = isLinked ? !linkedAllowed : allowed !== null && !allowed.includes(Number(rawPlan.listId));
     const plan = !denied && Number(rawPlan.revision ?? 0) > 0 && rawPlan.cancelled !== true
       ? await planWithCurrentVerification(db,rawPlan) : null;
     return res.json({ success: true, plan });
@@ -84,7 +90,8 @@ export function registerPjpRoutes(app: Express) {
     const key = keyFor(userId, date);
     const [row] = await db.select().from(platformMeta).where(eq(platformMeta.key, key)).limit(1).for("update");
     const previous = asObj(row?.value);
-    if (!row || Number(previous.revision ?? 0) !== expectedRevision) return res.status(409).json({ success: false, error: "Plan changed; refresh before completing this task." });
+    if (!row || previous.cancelled === true || Number(previous.revision ?? 0) !== expectedRevision)
+      return res.status(409).json({ success: false, error: "Plan cancelled or changed; refresh before completing this task." });
     const stops = previous.stops;
     if (!Array.isArray(stops)) return res.status(409).json({ success: false, error: "Invalid published PJP." });
     const target = stops.map(asObj).find(s => s.id === stopId && s.type === "task");

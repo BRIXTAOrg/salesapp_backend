@@ -11,6 +11,7 @@ import {
   desc,
   eq,
   inArray,
+  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -120,6 +121,8 @@ type FieldAccess = {
   viewPhotos: boolean;
   editOtherSites: boolean;
   scheduledSites: Set<string>;
+  linkedIds: Set<number>;
+  grantedLinkedIds: Set<number>;
 };
 const isObj = (v: unknown): v is Record<string, unknown> =>
   Boolean(v) && typeof v === "object" && !Array.isArray(v);
@@ -140,7 +143,21 @@ async function fieldAccessFor(db: AppDatabase, userId: number): Promise<FieldAcc
           /^site:[0-9a-f-]{36}$/i.test(stop.id)) scheduledSites.add(stop.id.slice(5).toLowerCase());
     }
   }
+  // New source-linked modules are opt-in even when legacy "all lists" is enabled.
+  const tenantTypes = await db.select({id:entityTypes.id,config:entityTypes.config, title:entityTypes.title})
+    .from(entityTypes).where(eq(entityTypes.isActive,true));
+  const linkedIds = new Set(tenantTypes.filter(t =>
+    isObj(t.config?.fieldSource) && readFieldAppConfig(t.config,t.title)).map(t => t.id));
+  const grantedLinkedIds = new Set(tenantTypes.filter(t =>
+    linkedIds.has(t.id) && (() => {
+      const access = t.config?.fieldModuleAccess;
+      return isObj(access) &&
+        Array.isArray(access.employeeIds) &&
+        access.employeeIds.includes(userId);
+    })()).map(t => t.id));
   return {
+    linkedIds,
+    grantedLinkedIds,
     listIds: Array.isArray(raw.listIds)
       ? raw.listIds.filter((id): id is number => Number.isSafeInteger(id) && id > 0) : null,
     recordScope: raw.recordScope === "assigned_only" || raw.recordScope === "all" ? raw.recordScope : "inherit",
@@ -151,6 +168,9 @@ async function fieldAccessFor(db: AppDatabase, userId: number): Promise<FieldAcc
   };
 }
 function listAllowed(access: FieldAccess, listId: number) {
+  // Existing unrestricted grants cover original datasets, never newly cloned modules.
+  // Linked modules have independent explicit grants, never inherited dataset access.
+  if (access.linkedIds.has(listId)) return access.grantedLinkedIds.has(listId);
   return access.listIds === null || access.listIds.includes(listId);
 }
 function effectiveRecordScope(access: FieldAccess, config: FieldAppConfig) {
@@ -184,19 +204,50 @@ function redactEvidence(detail: ReturnType<typeof recordDetail>, config: FieldAp
   };
 }
 
-async function fieldLists(db: AppDatabase) {
-  const rows = await db
-    .select()
-    .from(entityTypes)
-    .where(eq(entityTypes.isActive, true))
-    .orderBy(asc(entityTypes.title));
-
-  const lists: Array<{ row: (typeof rows)[number]; config: FieldAppConfig }> = [];
-  for (const row of rows) {
-    const config = readFieldAppConfig(row.config, row.title);
-    if (config) lists.push({ row, config });
+// Linked modules reuse record UUIDs and the source CRM. They never own a second record set.
+type FieldModule = {
+  row: typeof entityTypes.$inferSelect;
+  config: FieldAppConfig;
+  sourceListId: number;
+  included: string[] | null;
+  excluded: string[];
+};
+function linkedSource(row: typeof entityTypes.$inferSelect): {sourceListId:number; recordIds:string[]} | null {
+  const raw = row.config?.fieldSource;
+  if (!isObj(raw)) return null;
+  const sourceListId = Number(raw.sourceListId);
+  if (!Number.isSafeInteger(sourceListId) || sourceListId < 1) return null;
+  return {sourceListId, recordIds:Array.isArray(raw.recordIds)
+    ? raw.recordIds.map(String).map(id=>id.toLowerCase()).filter(id=>UUID.test(id)).slice(0,1000) : []};
+}
+async function fieldLists(db: AppDatabase): Promise<FieldModule[]> {
+  const rows = await db.select().from(entityTypes)
+    .where(eq(entityTypes.isActive,true)).orderBy(asc(entityTypes.title));
+  const published = rows.flatMap(row => {
+    const config = readFieldAppConfig(row.config,row.title);
+    return config ? [{row,config,linked:linkedSource(row)}] : [];
+  });
+  const bySource = new Map<number,Set<string>>();
+  for (const item of published) {
+    if (!item.linked) continue;
+    if (!bySource.has(item.linked.sourceListId)) bySource.set(item.linked.sourceListId,new Set());
+    for (const id of item.linked.recordIds) bySource.get(item.linked.sourceListId)!.add(id);
   }
-  return lists;
+  return published.map(item=>({
+    row:item.row,config:item.config,
+    sourceListId:item.linked?.sourceListId ?? item.row.id,
+    included:item.linked ? item.linked.recordIds : null,
+    excluded:item.linked ? [] : [...(bySource.get(item.row.id) ?? [])],
+  }));
+}
+function moduleWhere(module: FieldModule) {
+  if (module.included !== null) return module.included.length
+    ? inArray(entityRecords.id,module.included) : sql`false`;
+  return module.excluded.length ? notInArray(entityRecords.id,module.excluded) : sql`true`;
+}
+function moduleContains(module: FieldModule, id: string) {
+  const key=id.toLowerCase();
+  return module.included !== null ? module.included.includes(key) : !module.excluded.includes(key);
 }
 
 function titleOf(config: FieldAppConfig, data: Record<string, unknown>, externalKey: string | null) {
@@ -292,7 +343,7 @@ function originFrom(query: Record<string, unknown>) {
   return { lat, lng };
 }
 
-async function loadRecord(db: AppDatabase, id: string, forUpdate = false) {
+async function loadRecord(db: AppDatabase, id: string, forUpdate = false, moduleKey = "") {
   if (!UUID.test(id)) return null;
   const query = db
     .select()
@@ -309,10 +360,11 @@ async function loadRecord(db: AppDatabase, id: string, forUpdate = false) {
     .limit(1);
   if (!type || !type.isActive) return null;
 
-  const config = readFieldAppConfig(type.config, type.title);
-  if (!config) return null;
-
-  return { record, type, config };
+  const module = (await fieldLists(db)).find(m=>
+    m.row.key === (moduleKey || type.key) && m.sourceListId === record.entityTypeId);
+  // No module context means original source; split records are inaccessible there.
+  if (!module || !moduleContains(module, record.id)) return null;
+  return { record, type:module.row, config:module.config };
 }
 
 function sectionFieldKeys(config: FieldAppConfig) {
@@ -442,7 +494,8 @@ export function registerFieldRecordRoutes(app: Express) {
       const access = await fieldAccessFor(db, userId);
       const lists = await fieldLists(db);
       const result = [];
-      for (const { row, config } of lists) {
+      for (const module of lists) {
+        const {row,config} = module;
         if (!listAllowed(access,row.id)) continue;
         const onlyAssigned = effectiveRecordScope(access,config) === "assigned_to_me";
         const allowedAssigned = sql`${entityRecords.data}->'__field'->'assignee'->>'userId' = ${String(userId)}`;
@@ -456,7 +509,7 @@ export function registerFieldRecordRoutes(app: Express) {
             count: sql<number>`count(*)::int`,
           })
           .from(entityRecords)
-          .where(and(eq(entityRecords.entityTypeId, row.id), eq(entityRecords.status, "active"), scopeWhere))
+          .where(and(eq(entityRecords.entityTypeId, module.sourceListId), eq(entityRecords.status, "active"), moduleWhere(module), scopeWhere))
           .groupBy(sql`1`);
 
         const byStage: Record<string, number> = {};
@@ -489,7 +542,7 @@ export function registerFieldRecordRoutes(app: Express) {
       const listKey = String(req.params.key);
       const match = (await fieldLists(db)).find((item) => item.row.key === listKey);
       if (!match) return fail(res, 404, "This list is not in the field app.", "FIELD_LIST_NOT_FOUND");
-      const { row: type, config } = match;
+      const {row:type,config} = match;
       const access = await fieldAccessFor(db,userId);
       if (!listAllowed(access,type.id)) return fail(res,403,"This CRM dataset is not permitted.","FIELD_LIST_FORBIDDEN");
 
@@ -530,7 +583,7 @@ export function registerFieldRecordRoutes(app: Express) {
           )})`,
         })
         .from(entityRecords)
-        .where(and(eq(entityRecords.entityTypeId, type.id), eq(entityRecords.status, "active")))
+        .where(and(eq(entityRecords.entityTypeId, match.sourceListId), eq(entityRecords.status, "active"), moduleWhere(match)))
         .limit(MAX_LIST_ROWS);
 
       const counts: Record<string, number> = Object.fromEntries(
@@ -676,7 +729,7 @@ export function registerFieldRecordRoutes(app: Express) {
         return fail(res, 403, "Mobile access is disabled for this employee.", "FIELD_USER_INACTIVE");
       }
 
-      const loaded = await loadRecord(db, String(req.params.id));
+      const loaded = await loadRecord(db, String(req.params.id), false, String(req.query.moduleKey ?? ""));
       if (!loaded) return fail(res, 404, "This record is not available in the field app.", "FIELD_RECORD_NOT_FOUND");
       const { record, type, config } = loaded;
       const data = (record.data ?? {}) as Record<string, unknown>;
@@ -704,7 +757,7 @@ export function registerFieldRecordRoutes(app: Express) {
       if (!userId) return fail(res,401,"Unauthenticated.");
       const user = await fieldUser(db,userId);
       if (!user) return fail(res,403,"Mobile access is disabled for this employee.","FIELD_USER_INACTIVE");
-      const loaded = await loadRecord(db,String(req.params.id),true);
+      const loaded = await loadRecord(db,String(req.params.id),true,String(req.body?.moduleKey ?? ""));
       if (!loaded) return fail(res,404,"CRM site not found.","FIELD_RECORD_NOT_FOUND");
       const {record,type,config}=loaded;
       const data = {...(record.data ?? {}) as Record<string,unknown>};
@@ -754,7 +807,7 @@ export function registerFieldRecordRoutes(app: Express) {
       const user = await fieldUser(db, userId);
       if (!user) return fail(res, 403, "Mobile access is disabled for this employee.", "FIELD_USER_INACTIVE");
 
-      const loaded = await loadRecord(db, String(req.params.id), true);
+      const loaded = await loadRecord(db, String(req.params.id), true, String(req.body?.moduleKey ?? ""));
       if (!loaded) return fail(res, 404, "This record is not available in the field app.", "FIELD_RECORD_NOT_FOUND");
       const { record, type, config } = loaded;
       const access = await fieldAccessFor(db,userId);
