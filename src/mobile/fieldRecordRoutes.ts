@@ -1,3 +1,4 @@
+// BRIXTA_CRM_ACCESS_UX_V1_20261101
 // BRIXTA_SITE_ADMIN_V5
 import type {
   Express,
@@ -10,6 +11,7 @@ import {
   desc,
   eq,
   inArray,
+  or,
   sql,
 } from "drizzle-orm";
 
@@ -25,6 +27,7 @@ import {
   entityRecords,
   entityTypes,
   platformAuditEvents,
+  platformMeta,
   type EntityFieldDefinition,
 } from "../db/platformVNextSchema";
 
@@ -106,6 +109,78 @@ async function fieldUser(db: AppDatabase, userId: number): Promise<FieldUser | n
   return {
     id: user.id,
     name: user.displayName ?? user.username ?? `Employee ${user.id}`,
+  };
+}
+
+// BRIXTA_CRM_ACCESS_UX_V1 — tenant-local policy keyed by existing employee IDs.
+type FieldAccess = {
+  listIds: number[] | null;
+  recordScope: "inherit" | "assigned_only" | "all";
+  viewOtherHistory: boolean;
+  viewPhotos: boolean;
+  editOtherSites: boolean;
+  scheduledSites: Set<string>;
+};
+const isObj = (v: unknown): v is Record<string, unknown> =>
+  Boolean(v) && typeof v === "object" && !Array.isArray(v);
+const localDate = () => new Intl.DateTimeFormat("en-CA", {
+  timeZone:"Asia/Kolkata",year:"numeric",month:"2-digit",day:"2-digit",
+}).format(new Date());
+async function fieldAccessFor(db: AppDatabase, userId: number): Promise<FieldAccess> {
+  const keys = [`field-access:v1:${userId}`, `pjp:v1:${userId}:${localDate()}`];
+  const rows = await db.select().from(platformMeta).where(inArray(platformMeta.key, keys));
+  const stored = rows.find(row => row.key === keys[0]);
+  const raw = isObj(stored?.value) ? stored.value : {};
+  const pjp = rows.find(row => row.key === keys[1]);
+  const plan = isObj(pjp?.value) ? pjp.value : {};
+  const scheduledSites = new Set<string>();
+  if (plan.cancelled !== true && Array.isArray(plan.stops)) {
+    for (const stop of plan.stops) {
+      if (isObj(stop) && stop.type === "site" && typeof stop.id === "string" &&
+          /^site:[0-9a-f-]{36}$/i.test(stop.id)) scheduledSites.add(stop.id.slice(5).toLowerCase());
+    }
+  }
+  return {
+    listIds: Array.isArray(raw.listIds)
+      ? raw.listIds.filter((id): id is number => Number.isSafeInteger(id) && id > 0) : null,
+    recordScope: raw.recordScope === "assigned_only" || raw.recordScope === "all" ? raw.recordScope : "inherit",
+    viewOtherHistory: raw.viewOtherHistory !== false,
+    viewPhotos: raw.viewPhotos !== false,
+    editOtherSites: raw.editOtherSites === true,
+    scheduledSites,
+  };
+}
+function listAllowed(access: FieldAccess, listId: number) {
+  return access.listIds === null || access.listIds.includes(listId);
+}
+function effectiveRecordScope(access: FieldAccess, config: FieldAppConfig) {
+  return access.recordScope === "inherit" ? config.experience.list.recordScope :
+    access.recordScope === "assigned_only" ? "assigned_to_me" : "all";
+}
+function canViewSite(access: FieldAccess, config: FieldAppConfig, listId: number,
+    recordId: string, state: FieldState, userId: number) {
+  return listAllowed(access, listId) &&
+    (effectiveRecordScope(access,config) === "all" || state.assignee?.userId === userId ||
+      access.scheduledSites.has(recordId.toLowerCase()));
+}
+function canEditSite(access: FieldAccess, config: FieldAppConfig, listId: number,
+    recordId: string, state: FieldState, userId: number) {
+  if (!canViewSite(access, config, listId, recordId, state, userId)) return false;
+  if (access.editOtherSites || state.assignee?.userId === userId ||
+      access.scheduledSites.has(recordId.toLowerCase())) return true;
+  // Never modify another employee's assigned record without a grant.
+  if (state.assignee?.userId) return false;
+  // Preserve editing unassigned sites on a legacy "all" Field list.
+  return access.recordScope === "inherit" && config.experience.list.recordScope === "all";
+}
+function redactEvidence(detail: ReturnType<typeof recordDetail>, config: FieldAppConfig,
+    access: FieldAccess) {
+  if (access.viewPhotos) return detail;
+  const mediaFields = new Set(config.sections.flatMap(section => section.fields)
+    .filter(field => field.type === "photos" || field.type === "signature").map(field => field.key));
+  return {...detail,
+    values: Object.fromEntries(Object.entries(detail.values).filter(([key]) => !mediaFields.has(key))),
+    info: detail.info.filter(item => !mediaFields.has(item.key)),
   };
 }
 
@@ -284,6 +359,7 @@ async function timelineFor(
   db: AppDatabase,
   recordId: string,
   data: Record<string, unknown>,
+  onlyActorId?: number,
 ) {
   const events = await db
     .select({
@@ -312,7 +388,8 @@ async function timelineFor(
     : [];
   const nameOf = new Map(actors.map((actor) => [actor.id, actor.displayName ?? actor.username ?? `Employee ${actor.id}`]));
 
-  const items = events.map((event) => {
+  const items = events.filter(event => onlyActorId === undefined || event.actorUserId === onlyActorId)
+    .map((event) => {
     const payload = (event.payload ?? {}) as Record<string, unknown>;
     const changes = Array.isArray(payload.changes) ? (payload.changes as Array<Record<string, unknown>>) : [];
     const detail = changes
@@ -362,16 +439,24 @@ export function registerFieldRecordRoutes(app: Express) {
         return fail(res, 403, "Mobile access is disabled for this employee.", "FIELD_USER_INACTIVE");
       }
 
+      const access = await fieldAccessFor(db, userId);
       const lists = await fieldLists(db);
       const result = [];
       for (const { row, config } of lists) {
+        if (!listAllowed(access,row.id)) continue;
+        const onlyAssigned = effectiveRecordScope(access,config) === "assigned_to_me";
+        const allowedAssigned = sql`${entityRecords.data}->'__field'->'assignee'->>'userId' = ${String(userId)}`;
+        const stops = [...access.scheduledSites];
+        const scopeWhere = onlyAssigned
+          ? or(allowedAssigned, stops.length ? inArray(entityRecords.id,stops) : sql`false`)
+          : undefined;
         const counts = await db
           .select({
             stage: sql<string>`coalesce(${entityRecords.data} -> '__field' ->> 'stage', 'new')`,
             count: sql<number>`count(*)::int`,
           })
           .from(entityRecords)
-          .where(and(eq(entityRecords.entityTypeId, row.id), eq(entityRecords.status, "active")))
+          .where(and(eq(entityRecords.entityTypeId, row.id), eq(entityRecords.status, "active"), scopeWhere))
           .groupBy(sql`1`);
 
         const byStage: Record<string, number> = {};
@@ -405,6 +490,8 @@ export function registerFieldRecordRoutes(app: Express) {
       const match = (await fieldLists(db)).find((item) => item.row.key === listKey);
       if (!match) return fail(res, 404, "This list is not in the field app.", "FIELD_LIST_NOT_FOUND");
       const { row: type, config } = match;
+      const access = await fieldAccessFor(db,userId);
+      if (!listAllowed(access,type.id)) return fail(res,403,"This CRM dataset is not permitted.","FIELD_LIST_FORBIDDEN");
 
       const requestedLens = String(
         req.query.lens ?? config.experience.list.defaultLens,
@@ -456,7 +543,7 @@ export function registerFieldRecordRoutes(app: Express) {
         const data = (row.data ?? {}) as Record<string, unknown>;
         const state = readFieldState(data);
 
-        if (!inFieldRecordScope(config, state, userId)) continue;
+        if (!canViewSite(access, config, type.id, row.id, state, userId)) continue;
 
         for (const lensDefinition of config.experience.list.lenses) {
           if (
@@ -593,11 +680,16 @@ export function registerFieldRecordRoutes(app: Express) {
       if (!loaded) return fail(res, 404, "This record is not available in the field app.", "FIELD_RECORD_NOT_FOUND");
       const { record, type, config } = loaded;
       const data = (record.data ?? {}) as Record<string, unknown>;
-
+      const access = await fieldAccessFor(db,userId);
+      if (!canViewSite(access,config,type.id,record.id,readFieldState(data),userId))
+        return fail(res,403,"You are not allowed to view this site.","FIELD_SITE_FORBIDDEN");
+      const timeline = await timelineFor(db,record.id,data);
+      const permittedTimeline = access.viewOtherHistory ? timeline :
+        await timelineFor(db,record.id,data,userId);
       return ok(res, {
         list: { id: type.id, key: type.key, title: config.title, config },
-        record: recordDetail(config, type, record, userId),
-        timeline: await timelineFor(db, record.id, data),
+        record: redactEvidence(recordDetail(config, type, record, userId), config, access),
+        timeline: permittedTimeline,
       });
     }),
   );
@@ -617,10 +709,12 @@ export function registerFieldRecordRoutes(app: Express) {
       const {record,type,config}=loaded;
       const data = {...(record.data ?? {}) as Record<string,unknown>};
       const state = readFieldState(data);
-      if (!inFieldRecordScope(config,state,userId)) {
-        return fail(res,403,"This site is outside your assigned Field scope.","FIELD_SCOPE_MISMATCH");
+      const access = await fieldAccessFor(db,userId);
+      if (!canEditSite(access,config,type.id,record.id,state,userId)) {
+        return fail(res,403,"You cannot edit this site's data.","FIELD_EDIT_FORBIDDEN");
       }
-      if (state.assignee && state.assignee.userId !== userId) {
+      if (state.assignee && state.assignee.userId !== userId && !access.editOtherSites &&
+          !access.scheduledSites.has(record.id.toLowerCase())) {
         return fail(res,403,"This site is assigned to another employee.","FIELD_ASSIGNEE_MISMATCH");
       }
       const verified = config.sections.some(section =>
@@ -663,6 +757,10 @@ export function registerFieldRecordRoutes(app: Express) {
       const loaded = await loadRecord(db, String(req.params.id), true);
       if (!loaded) return fail(res, 404, "This record is not available in the field app.", "FIELD_RECORD_NOT_FOUND");
       const { record, type, config } = loaded;
+      const access = await fieldAccessFor(db,userId);
+      if (!canEditSite(access,config,type.id,record.id,readFieldState(record.data),userId)) {
+        return fail(res,403,"This employee cannot edit this CRM site.","FIELD_EDIT_FORBIDDEN");
+      }
 
       // BRIXTA_FIELD_SYNC_GENERATION_V1 — check before section lookup. An
       // offline request for a step removed by a newer app must return 409,
@@ -681,6 +779,9 @@ export function registerFieldRecordRoutes(app: Express) {
 
       const section = config.sections.find((item) => item.key === String(req.params.section));
       if (!section) return fail(res, 404, "This step does not exist.", "FIELD_SECTION_NOT_FOUND");
+      if (!access.viewPhotos && section.fields.some(f => f.type === "photos" || f.type === "signature")) {
+        return fail(res,403,"Photo evidence access is needed to edit this step.","FIELD_MEDIA_FORBIDDEN");
+      }
 
       const data = { ...((record.data ?? {}) as Record<string, unknown>) };
       const state = readFieldState(data);
@@ -715,6 +816,7 @@ export function registerFieldRecordRoutes(app: Express) {
       const now = new Date();
       const nowIso = now.toISOString();
       const changes = [];
+      const changesDetailed: Array<{field:string;from:unknown;to:unknown}> = [];
       for (const field of section.fields) {
         if (!Object.prototype.hasOwnProperty.call(cleaned.values, field.key)) continue;
         const before = data[field.key];
@@ -722,6 +824,11 @@ export function registerFieldRecordRoutes(app: Express) {
         if (JSON.stringify(before ?? null) === JSON.stringify(after ?? null)) continue;
         const show = (value: unknown) => answerText(field, value).slice(0, 80);
         changes.push({ field: field.key, label: field.label, from: show(before), to: show(after) });
+        // Exact prior/new values for non-media captures. Photos remain referenced
+        // by the media store; keep bulky and sensitive binary payloads out of audit JSON.
+        if (!(["photos","signature","gps"].includes(field.type))) {
+          changesDetailed.push({field:field.key,from:before??null,to:after??null});
+        }
       }
 
       // BRIXTA_SITE_ADMIN_V5: Verify step and its name share one offline-safe save.
@@ -873,6 +980,7 @@ export function registerFieldRecordRoutes(app: Express) {
           stageTo,
           stageLabel: stage.label,
           changes: changes.slice(0, 20),
+          changesDetailed: changesDetailed.slice(0, 40),
           byName: user.name,
           clientMutationId: MUTATION_ID.test(mutationId) ? mutationId : null,
           pixelLogicVersion: program?.enabled ? config.version : null,

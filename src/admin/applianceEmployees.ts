@@ -1,8 +1,10 @@
+// BRIXTA_COMPANY_ORG_UI_20261101
 import type {
   Router,
 } from "express";
 
 import bcrypt from "bcryptjs";
+import { getDepartments, departmentMemberCounts, normalizeDepartmentKey } from "../services/departments";
 
 import {
   and,
@@ -346,6 +348,21 @@ function pixelRealityActors(
             ),
         )
     : [];
+}
+
+async function checkDepartmentCapacity(db: AppDatabase, name: string, previous: string | null = null) {
+  const clean = name.trim();
+  if (!clean || normalizeDepartmentKey(clean) === normalizeDepartmentKey(previous ?? "")) return null;
+  const departments = await getDepartments(db);
+  const department = departments.find(item => item.key === normalizeDepartmentKey(clean));
+  if (!department || department.maxMembers === null) return null;
+  // Serialize concurrent allocations by department key, within the tenant transaction.
+  await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${department.key}))`);
+  const counts = await departmentMemberCounts(db);
+  if ((counts.get(department.key) ?? 0) >= department.maxMembers) {
+    return `${department.name} has reached its ${department.maxMembers}-employee capacity.`;
+  }
+  return null;
 }
 
 export function registerEmployeeAdminRoutes(
@@ -1042,6 +1059,8 @@ export function registerEmployeeAdminRoutes(
             roleIds,
           );
 
+          const capacityError = await checkDepartmentCapacity(db, String(req.body?.department ?? ""));
+          if (capacityError) return res.status(409).json({success:false,error:capacityError});
           const passwordHash =
             await bcrypt.hash(
               password,
@@ -1312,6 +1331,9 @@ export function registerEmployeeAdminRoutes(
           }
         }
 
+        const nextDepartment = req.body?.department === null ? "" : String(req.body?.department ?? before.department ?? "");
+        const capacityError = await checkDepartmentCapacity(db, nextDepartment, before.department);
+        if (capacityError) return res.status(409).json({success:false,error:capacityError});
         await db.execute(sql`SAVEPOINT brixta_update_employee`);
         try {
 

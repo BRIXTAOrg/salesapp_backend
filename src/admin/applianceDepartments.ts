@@ -1,3 +1,4 @@
+// BRIXTA_COMPANY_ORG_UI_20261101
 import crypto from "node:crypto";
 
 import type {
@@ -142,6 +143,8 @@ export function registerDepartmentAdminRoutes(
             `department_${crypto.randomUUID()}`,
           key,
           name,
+          maxMembers: Number.isSafeInteger(req.body?.maxMembers) && Number(req.body.maxMembers) > 0
+            && Number(req.body.maxMembers) <= 100000 ? Number(req.body.maxMembers) : null,
 
           defaultAuthority:
             normalizeDepartmentAuthority(
@@ -298,6 +301,10 @@ export function registerDepartmentAdminRoutes(
 
           key:
             nextKey,
+          maxMembers: "maxMembers" in (req.body ?? {})
+            ? (Number.isSafeInteger(req.body.maxMembers) && Number(req.body.maxMembers) > 0 && Number(req.body.maxMembers) <= 100000
+              ? Number(req.body.maxMembers) : null)
+            : current.maxMembers,
 
           defaultAuthority:
             "defaultAuthority" in
@@ -314,6 +321,10 @@ export function registerDepartmentAdminRoutes(
               .toISOString(),
         };
 
+        const counts = await departmentMemberCounts(db);
+        if (updated.maxMembers !== null && (counts.get(current.key) ?? 0) > updated.maxMembers) {
+          return res.status(409).json({success:false,error:"Capacity is below current department membership."});
+        }
         departments[index] =
           updated;
 

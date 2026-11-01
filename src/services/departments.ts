@@ -1,3 +1,4 @@
+// BRIXTA_COMPANY_ORG_UI_20261101
 import crypto from "node:crypto";
 
 import {
@@ -38,6 +39,8 @@ export type DepartmentDefinition = {
   id: string;
   key: string;
   name: string;
+  /** Optional capacity cap; null means unlimited. */
+  maxMembers: number | null;
   defaultAuthority: DepartmentAuthority;
   createdAt: string;
   updatedAt: string;
@@ -168,6 +171,8 @@ function normalizeDepartment(
       `department_${crypto.randomUUID()}`,
 
     name,
+    maxMembers: Number.isSafeInteger(raw.maxMembers) && Number(raw.maxMembers) > 0
+      ? Number(raw.maxMembers) : null,
 
     defaultAuthority:
       normalizeDepartmentAuthority(
@@ -381,6 +386,7 @@ export async function getDepartments(
           `department_${crypto.randomUUID()}`,
         key,
         name,
+        maxMembers: null,
         defaultAuthority: {
           kind: "none",
         },

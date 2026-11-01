@@ -10,6 +10,7 @@ import {
   and,
   eq,
   or,
+  sql,
   type InferSelectModel,
 } from "drizzle-orm";
 
@@ -165,7 +166,7 @@ export default function setupAuthRoutes(
             .where(
               and(
                 eq(
-                  organizations.schemaName,
+                  sql<string>`lower(coalesce(to_jsonb(${organizations}) ->> 'login_code', ${organizations.schemaName}))`,
                   String(
                     companyCode,
                   )
@@ -397,6 +398,8 @@ export default function setupAuthRoutes(
           .json({
             success: true,
             token,
+            // Stable tenant schema keeps existing offline cache keys intact.
+            tenantSchema: org.schemaName,
 
             user: {
               id:

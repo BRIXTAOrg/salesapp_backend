@@ -1,3 +1,4 @@
+// BRIXTA_CRM_ACCESS_UX_V1_20261101
 /*
  * BRIXTA_FIELD_APP_CONTRACT_V3
  *
@@ -200,6 +201,10 @@ export type FieldListExperience = {
   recordScope: FieldRecordScope;
   search: boolean;
   defaultLens: string;
+  /** Allow CMS to opt out of the Not Visited starting view. */
+  preferNotVisitedDefault: boolean;
+  /** Native filter controls; AI and the manual editor can change this. */
+  filterControl: "dropdown" | "pills";
   lenses: FieldListLens[];
 
   /** Extra values rendered underneath the CRM record title. */
@@ -223,6 +228,10 @@ export type FieldDetailExperience = {
   showCopyLink: boolean;
   showImportedInfo: boolean;
   showTimeline: boolean;
+  /** Show verified evidence thumbnails on the site screen. */
+  showEvidenceGallery: boolean;
+  /** Optional view-first layout; steps and data remain the same. */
+  layoutStyle: "standard" | "timeline_first";
 };
 
 export type FieldManagementExperience = {
@@ -371,6 +380,8 @@ export const DEFAULT_STAGES: FieldStage[] = [
 
 
 export const DEFAULT_FIELD_LENSES: FieldListLens[] = [
+  { key: "not_visited", label: "Not Visited", kind: "all", field: null, values: [], stageKeys: [] },
+  { key: "verified", label: "Verified", kind: "all", field: null, values: [], stageKeys: [] },
   {
     key: "mine",
     label: "Mine",
@@ -417,7 +428,9 @@ export const DEFAULT_FIELD_EXPERIENCE: FieldExperience = {
   list: {
     recordScope: "all",
     search: true,
-    defaultLens: "mine",
+    defaultLens: "not_visited",
+    preferNotVisitedDefault: true,
+    filterControl: "dropdown",
     lenses: DEFAULT_FIELD_LENSES,
     cardFields: [],
     badgeField: null,
@@ -434,6 +447,8 @@ export const DEFAULT_FIELD_EXPERIENCE: FieldExperience = {
     showCopyLink: true,
     showImportedInfo: true,
     showTimeline: true,
+    showEvidenceGallery: true,
+    layoutStyle: "standard",
   },
   management: {
     summaryLensKeys: ["todo", "active", "followups", "closed"],
@@ -676,6 +691,13 @@ export function normalizeFieldExperience(raw: unknown): FieldExperience {
     }));
   }
 
+  // Adding built-in visibility lenses never deletes tenant-defined CRM filters.
+  if (!lenses.some((lens) => lens.key === "not_visited")) {
+    lenses = [DEFAULT_FIELD_LENSES[0], ...lenses];
+  }
+  if (!lenses.some((lens) => lens.key === "verified")) {
+    lenses = [...lenses.slice(0, 1), DEFAULT_FIELD_LENSES[1], ...lenses.slice(1)];
+  }
   const requestedDefault = fieldKey(listRaw.defaultLens);
   const defaultLens =
     requestedDefault && lenses.some((lens) => lens.key === requestedDefault)
@@ -701,6 +723,8 @@ export function normalizeFieldExperience(raw: unknown): FieldExperience {
           : "all",
       search: listRaw.search !== false,
       defaultLens,
+      preferNotVisitedDefault: listRaw.preferNotVisitedDefault !== false,
+      filterControl: listRaw.filterControl === "pills" ? "pills" : "dropdown",
       lenses,
       cardFields: list(listRaw.cardFields, fieldKey, 4),
       badgeField: fieldKey(listRaw.badgeField),
@@ -724,6 +748,8 @@ export function normalizeFieldExperience(raw: unknown): FieldExperience {
       showCopyLink: detailRaw.showCopyLink !== false,
       showImportedInfo: detailRaw.showImportedInfo !== false,
       showTimeline: detailRaw.showTimeline !== false,
+      showEvidenceGallery: detailRaw.showEvidenceGallery !== false,
+      layoutStyle: detailRaw.layoutStyle === "timeline_first" ? "timeline_first" : "standard",
     },
 
     management: {
@@ -1482,6 +1508,18 @@ export function matchesFieldLens(
   viewerId: number | null,
 ): boolean {
   const stage = stageOf(config, state.stage);
+  // Durable verified flag: the Verify step survives later CRM stage transitions.
+  const fieldMeta = data.__field && typeof data.__field === "object" && !Array.isArray(data.__field)
+    ? data.__field as Record<string, unknown> : {};
+  const sectionMap = fieldMeta.sections && typeof fieldMeta.sections === "object" && !Array.isArray(fieldMeta.sections)
+    ? fieldMeta.sections as Record<string, unknown> : {};
+  const verified = Object.entries(sectionMap).some(([key, value]) =>
+    /^(verify|verification)(_|$)/i.test(key) && Boolean(value && typeof value === "object" &&
+      (value as Record<string, unknown>).completedAt));
+  if (lens.key === "verified") return verified;
+  if (lens.key === "not_visited") {
+    return state.stage === "new" && !fieldMeta.lastVisitAt && !verified;
+  }
 
   switch (lens.kind) {
     case "all":
