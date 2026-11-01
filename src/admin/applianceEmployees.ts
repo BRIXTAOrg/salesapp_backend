@@ -1,3 +1,4 @@
+// BRIXTA_UNIFIED_PRIMARY_ROLE_V1
 // BRIXTA_COMPANY_ORG_UI_20261101
 import type {
   Router,
@@ -101,6 +102,20 @@ async function activeAdminCount(db: AppDatabase): Promise<number> {
   `);
   const row = result.rows[0] as { count?: number | string } | undefined;
   return Number(row?.count ?? 0);
+}
+
+async function actorCanAssignRole(db: AppDatabase, actorId: number | null | undefined): Promise<boolean> {
+  if (!actorId || !Number.isSafeInteger(actorId) || actorId <= 0) return false;
+  const result = await db.execute(sql`
+    SELECT 1 FROM users u
+    JOIN user_roles ur ON ur.user_id = u.id
+    JOIN roles r ON r.id = ur.role_id
+    WHERE u.id = ${actorId} AND u.status = 'active'
+      AND u.is_dashboard_user = true
+      AND 'ALL_ACCESS' = ANY(r.granted_perms)
+    LIMIT 1
+  `);
+  return result.rows.length > 0;
 }
 
 async function hasDashboardPermissions(db: AppDatabase, userId: number): Promise<boolean> {
@@ -465,6 +480,19 @@ export function registerEmployeeAdminRoutes(
             asc(users.id),
           );
 
+        const roleAssignments = await db.select({
+          userId: userRoles.userId,
+          roleId: userRoles.roleId,
+          orgRole: roles.orgRole,
+          jobRole: roles.jobRole,
+        }).from(userRoles).innerJoin(roles, eq(userRoles.roleId, roles.id));
+        const rolesByUser = new Map<number, Array<{ id: number; name: string }>>();
+        for (const entry of roleAssignments) {
+          const existing = rolesByUser.get(entry.userId) ?? [];
+          existing.push({ id: entry.roleId, name: entry.orgRole || entry.jobRole || `Role ${entry.roleId}` });
+          rolesByUser.set(entry.userId, existing);
+        }
+
         const assignments = await db
           .select({
             userId:
@@ -572,6 +600,13 @@ export function registerEmployeeAdminRoutes(
 
                 return {
                   ...employee,
+                  primaryRoleName: (rolesByUser.get(employee.id) ?? []).length === 1
+                    ? (rolesByUser.get(employee.id) ?? [])[0]?.name ?? null
+                    : null,
+                  primaryRoleId: (rolesByUser.get(employee.id) ?? []).length === 1
+                    ? (rolesByUser.get(employee.id) ?? [])[0]?.id ?? null
+                    : null,
+                  assignedRoleCount: (rolesByUser.get(employee.id) ?? []).length,
 
                   reportsToId:
                     managerId,
@@ -1049,15 +1084,21 @@ export function registerEmployeeAdminRoutes(
             ids,
           );
 
-          const roleIds =
-            normalizeIds(
-              req.body?.roleIds,
-            );
+          const explicitlySelected = Object.prototype.hasOwnProperty.call(req.body ?? {}, "primaryRoleId");
+          const selectedId = Number(req.body?.primaryRoleId);
+          if (explicitlySelected && (!Number.isSafeInteger(selectedId) || selectedId <= 0)) {
+            throw new Error("Choose one valid Role before adding an employee.");
+          }
+          const roleIds = explicitlySelected ? [selectedId] : normalizeIds(req.body?.roleIds);
+          await validateRoleIds(db, roleIds);
+          if (roleIds.length && !(await actorCanAssignRole(db, req.adminActor?.userId))) {
+            throw new Error("Only a full-access administrator may assign employee Roles.");
+          }
+          const [primaryRole] = roleIds.length === 1
+            ? await db.select({ orgRole: roles.orgRole, jobRole: roles.jobRole }).from(roles)
+                .where(eq(roles.id, roleIds[0])).limit(1)
+            : [];
 
-          await validateRoleIds(
-            db,
-            roleIds,
-          );
 
           const capacityError = await checkDepartmentCapacity(db, String(req.body?.department ?? ""));
           if (capacityError) return res.status(409).json({success:false,error:capacityError});
@@ -1103,16 +1144,7 @@ export function registerEmployeeAdminRoutes(
                     "",
                 ).trim() ||
                 null,
-              role:
-                String(
-                  req.body?.role ??
-                    "",
-                ).trim() ||
-                String(
-                  req.body?.designation ??
-                    "",
-                ).trim() ||
-                "EMPLOYEE",
+              role: primaryRole?.orgRole || primaryRole?.jobRole || "EMPLOYEE",
               status:
                 "active",
               area:
@@ -1331,6 +1363,25 @@ export function registerEmployeeAdminRoutes(
           }
         }
 
+        const primaryRoleRequested = Object.prototype.hasOwnProperty.call(req.body ?? {}, "primaryRoleId");
+        const newPrimaryRoleId = Number(req.body?.primaryRoleId);
+        if (primaryRoleRequested && (!Number.isSafeInteger(newPrimaryRoleId) || newPrimaryRoleId <= 0)) {
+          return res.status(400).json({ success: false, error: "Choose one valid Role." });
+        }
+        if (primaryRoleRequested && !(await actorCanAssignRole(db, req.adminActor?.userId))) {
+          return res.status(403).json({ success: false, error: "Only a full-access administrator can change employee Roles." });
+        }
+        const [newPrimaryRole] = primaryRoleRequested
+          ? await db.select({ id: roles.id, orgRole: roles.orgRole, jobRole: roles.jobRole })
+              .from(roles).where(eq(roles.id, newPrimaryRoleId)).limit(1)
+          : [];
+        if (primaryRoleRequested && !newPrimaryRole) {
+          return res.status(400).json({ success: false, error: "That Role does not exist in this company." });
+        }
+        if (Object.prototype.hasOwnProperty.call(req.body ?? {}, "role") &&
+            !(await actorCanAssignRole(db, req.adminActor?.userId))) {
+          return res.status(403).json({success:false,error:"Only a full-access administrator can change legacy Role labels."});
+        }
         const nextDepartment = req.body?.department === null ? "" : String(req.body?.department ?? before.department ?? "");
         const capacityError = await checkDepartmentCapacity(db, nextDepartment, before.department);
         if (capacityError) return res.status(409).json({success:false,error:capacityError});
@@ -1341,6 +1392,8 @@ export function registerEmployeeAdminRoutes(
           updatedAt:
             new Date().toISOString(),
         };
+
+        if (newPrimaryRole) update.role = newPrimaryRole.orgRole || newPrimaryRole.jobRole || "EMPLOYEE";
 
         const mappings = [
           ["name", "displayName"],
@@ -1365,6 +1418,7 @@ export function registerEmployeeAdminRoutes(
           ) {
             const raw =
               req.body[bodyKey];
+            if (dbKey === "role" && newPrimaryRole) continue;
             const cleaned =
               raw === null
                 ? null
@@ -1413,6 +1467,19 @@ export function registerEmployeeAdminRoutes(
             ),
           )
           .returning();
+
+        // A primary Role change is atomic with the employee profile update.
+        if (newPrimaryRole) {
+          const adminsBeforeRole = await activeAdminCount(db);
+          await db.delete(userRoles).where(eq(userRoles.userId, userId));
+          await db.insert(userRoles).values({ userId, roleId: newPrimaryRole.id });
+          if (adminsBeforeRole > 0 && (await activeAdminCount(db)) === 0) {
+            throw new Error("Cannot remove the last active administrator's full-access Role.");
+          }
+          if (req.adminActor?.userId === userId && !(await hasDashboardPermissions(db, userId))) {
+            throw new Error("This Role would lock you out of the dashboard.");
+          }
+        }
 
         // BRIXTA_REPORTING_PROFILE_UPDATE
         let reporting =
@@ -2226,10 +2293,10 @@ export function registerEmployeeAdminRoutes(
             });
         }
 
-        const roleIds =
-          normalizeIds(
-            req.body?.roleIds,
-          );
+        const roleIds = normalizeIds(req.body?.roleIds);
+        if (!(await actorCanAssignRole(db, req.adminActor?.userId))) {
+          return res.status(403).json({ success: false, error: "Only a full-access administrator may change employee Roles." });
+        }
 
         try {
           await validateRoleIds(
@@ -2285,6 +2352,12 @@ export function registerEmployeeAdminRoutes(
                   }),
                 ),
               );
+          }
+          if (roleIds.length === 1) {
+            const [selected] = await db.select({ orgRole: roles.orgRole, jobRole: roles.jobRole })
+              .from(roles).where(eq(roles.id, roleIds[0])).limit(1);
+            await db.update(users).set({role: selected?.orgRole || selected?.jobRole || "EMPLOYEE"})
+              .where(eq(users.id, userId));
           }
 
           if (adminsBefore > 0 && (await activeAdminCount(db)) === 0) {
