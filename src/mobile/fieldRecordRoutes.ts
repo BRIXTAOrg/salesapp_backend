@@ -500,6 +500,27 @@ async function timelineFor(
 }
 
 export function registerFieldRecordRoutes(app: Express) {
+  // BRIXTA_FIELD_LIVE_ACCESS_POLL_V1_20261102
+  // Cheap read-only module-authorization probe; no site record counts or writes.
+  app.get(
+    "/api/salesApp/field/access",
+    authenticateToken,
+    withTenantDb<AuthRequest>(async (req, res, db) => {
+      const userId = userIdFrom(req);
+      if (!userId) return fail(res, 401, "Unauthenticated.");
+      if (!(await fieldUser(db, userId))) {
+        return fail(res, 403, "Mobile access is disabled for this employee.", "FIELD_USER_INACTIVE");
+      }
+      const access = await fieldAccessFor(db, userId);
+      const modules = await fieldLists(db);
+      return ok(res, {
+        moduleKeys: modules
+          .filter((module) => listAllowed(access, module.row.id))
+          .map((module) => module.row.key),
+      });
+    }),
+  );
+
   app.get(
     "/api/salesApp/field/lists",
     authenticateToken,
