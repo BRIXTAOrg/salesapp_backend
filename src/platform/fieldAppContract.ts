@@ -301,7 +301,7 @@ export function normalizeJourneyRules(raw: unknown): JourneyRules {
     homeTitle: short(value.homeTitle, 80, "Today's journey"),
     taskLabel: short(value.taskLabel, 40, "Tasks"),
     sortMode: value.sortMode === "priority" ? "priority" : "nearest",
-    maxSiteStops: numeric(value.maxSiteStops, 20, 8),
+    maxSiteStops: numeric(value.maxSiteStops, 50, 8),
     radiusKm: numeric(value.radiusKm, 100, 15),
     allowedStages: Array.isArray(value.allowedStages)
       ? [...new Set(value.allowedStages.filter((x): x is string => typeof x === "string" && /^[a-z0-9_]{1,100}$/.test(x)))].slice(0, 30)
